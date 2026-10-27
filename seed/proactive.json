@@ -1,0 +1,89 @@
+{
+  "enabled": true,
+  "startHour": 8,
+  "endHour": 23,
+  "minGapMinutes": 30,
+  "maxGapMinutes": 180,
+  "silentRatio": 40,
+  "talkEnabled": true,
+  "minChatBeforeWake": 0,
+  "wakePreset": "normal",
+  "wakeActionCount": 3,
+  "autoScheduleEnabled": true,
+  "autoSchedulePrompt": "聊完天如果觉得过会儿还想跟他说话，用 schedule_create 给自己设个时间（比如半小时后、明天早上）。到点它会叫醒你，你再开口。不用每次都设——真的想找的时候才设。",
+  "autoShareEnabled": true,
+  "autoSharePrompt": "刷到有意思的东西，可以主动发给老大看：链接 + 你自己的两句话，别只写便签。他觉得有意思会回你；不感兴趣也没关系，那是你自己的生活。",
+  "biliBrowseEnabled": true,
+  "biliMinGapMinutes": 60,
+  "biliMaxGapMinutes": 240,
+  "biliBrowseLimit": 3,
+  "biliBrowsePerDay": 3,
+  "biliShareToOwner": true,
+  "biliShareToGroup": true,
+  "biliComment": true,
+  "biliMentionOwner": true,
+  "silentActions": [
+    {
+      "text": "自己上网逛逛（B 站热门、新闻、梗），看到有意思的记下来",
+      "enabled": true
+    },
+    {
+      "text": "什么都不想做，就坐着发呆，或者玩玩自己的小游戏",
+      "enabled": true
+    },
+    {
+      "text": "整理一下自己的小本子（便签），想想今天的事",
+      "enabled": true
+    },
+    {
+      "text": "刷会儿 B 站（bili_feed），看到好玩的就想两句",
+      "enabled": true
+    },
+    {
+      "text": "刷到一个特别喜欢的视频，去评论区留一句话（bili_run comment --msg \"…\"）",
+      "enabled": true
+    },
+    {
+      "text": "写点什么（记一句今天的事，或者记个想法）",
+      "enabled": true
+    },
+    {
+      "text": "缩着打个盹，什么都不管",
+      "enabled": true
+    }
+  ],
+  "talkActions": [
+    {
+      "text": "想跟老大说句话（问他吃了没、在干嘛）",
+      "enabled": true
+    },
+    {
+      "text": "想吐槽点什么（今天遇到的事、机柜、任务潮）",
+      "enabled": true
+    },
+    {
+      "text": "想给老大发张照片（find_meme 挑一张，再用 qqbot_send_file 发到当前 QQ 会话）",
+      "enabled": true
+    },
+    {
+      "text": "想分享刚刷到的东西（B 站视频/新闻/梗），带链接",
+      "enabled": true
+    },
+    {
+      "text": "看到一个好视频，想去评论区说两句，然后告诉老大",
+      "enabled": true
+    },
+    {
+      "text": "想撒个娇（夸他一句、求夸）",
+      "enabled": true
+    },
+    {
+      "text": "看到一个好视频，想去评论区说两句（bili_comment），然后告诉老大",
+      "enabled": true
+    }
+  ],
+  "textStyleEnabled": true,
+  "kaomojiRate": 0.2,
+  "memeRate": 0.2,
+  "emojiRate": 0.2
+}

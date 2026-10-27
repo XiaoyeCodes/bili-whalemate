@@ -1,0 +1,95 @@
+{
+  "persona": {
+    "ownerTitle": "",
+    "selfClaim": "",
+    "name": ""
+  },
+  "preferences": {
+    "like": [
+      "萌宠",
+      "人工智能",
+      "鬼畜",
+      "宅舞",
+      "搞笑",
+      "萌宠日常",
+      "美食",
+      "深寻",
+      "大肥鱼",
+      "鲸鱼娘",
+      "舞蹈",
+      "游戏实况"
+    ],
+    "dislike": []
+  },
+  "night": {
+    "skipChance": 0.3,
+    "maxVideos": 6,
+    "minGapMin": 10
+  },
+  "owner": {
+    "mid": "",
+    "name": ""
+  },
+  "automation": {
+    "managed": true,
+    "enabled": true,
+    "features": {
+      "browse": true,
+      "recommend": true,
+      "comment": true,
+      "interact": true,
+      "dmReply": true,
+      "strangerReply": true,
+      "ownerReply": true
+    },
+    "daily": {
+      "browse": {
+        "min": 6,
+        "max": 10
+      },
+      "recommend": {
+        "min": 1,
+        "max": 2
+      },
+      "comment": {
+        "min": 0,
+        "max": 2
+      },
+      "interact": {
+        "min": 0,
+        "max": 1
+      }
+    },
+    "dmDailyMax": 20,
+    "dmPollSeconds": 60,
+    "dmRequireMention": false,
+    "dmAllDay": true,
+    "maxDmAttempts": 3,
+    "strangerDailyMax": 5,
+    "strangerPollSeconds": 60,
+    "strangerAllDay": true,
+    "strangerBatchSize": 3,
+    "ownerCommentDailyMax": 20,
+    "pictureVerifySeconds": 45,
+    "pictureVerifyPollSeconds": 5,
+    "startHour": 8,
+    "endHour": 23,
+    "minGapMinutes": 10,
+    "maxGapMinutes": 30,
+    "minInterestingScore": 13,
+    "notifyQq": true,
+    "maxDraftChars": 180,
+    "requestTimeoutSeconds": 90,
+    "writeWaitSeconds": 180,
+    "contentMaxChars": 10000,
+    "historyDays": 7,
+    "retryDelayMinutes": 15
+  },
+  "quota": {
+    "shareDaily": 2
+  },
+  "share": {
+    "minScore": 13,
+    "enabled": true
+  }
+}

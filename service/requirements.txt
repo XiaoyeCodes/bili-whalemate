@@ -1,0 +1,6 @@
+# companion-memory —— 情感陪伴记忆服务
+# 标准库 HTTP；numpy 用于检索，PyYAML 兼容配置，qrcode 生成登录二维码
+numpy>=1.26
+PyYAML>=6.0
+qrcode>=8.0,<9
+Pillow>=11,<14

@@ -1,0 +1,21 @@
+{
+  "name": "bili-whalemate",
+  "version": "1.0.0",
+  "description": "大肥鱼：共享人设、官方 QQ、Bilibili 自动互动和表情图库的可迁移 Harness 组合包",
+  "type": "module",
+  "main": "index.mjs",
+  "exports": { ".": "./index.mjs", "./client": "./client.js" },
+  "files": ["index.mjs", "runtime.mjs", "remembers.mjs", "config.mjs", "client.js", "client.mjs", "service", "tools", "vendor", "seed", "cordis.patch.yml", "README.md", "LICENSE", "THIRD_PARTY.md"],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" }, "client": { "platform": "web" } },
+  "dependencies": { "qrcode": "1.5.4" },
+  "peerDependencies": { "@deepseek-ai/dsh-llm": "*" },
+  "engines": { "node": ">=24.9" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:install": "python -m unittest discover -s test -p test_setup.py",
+    "audit:public": "python scripts/audit_public.py",
+    "release:build": "python scripts/build_release.py"
+  },
+  "repository": { "type": "git", "url": "https://github.com/XiaoyeCodes/bili-whalemate.git" },
+  "license": "MIT"
+}

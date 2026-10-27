@@ -1,0 +1,15 @@
+gallery/
+dist/
+node_modules/
+__pycache__/
+*.pyc
+.venv*/
+*.log
+*.sqlite3*
+*.db*
+.env
+credentials.json
+runtime.json
+official-qq-bridge.json
+.install-*/
+*.tgz
