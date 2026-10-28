@@ -15,7 +15,6 @@
     "config.mjs",
     "client.js",
     "client.mjs",
-    "service",
     "tools",
     "vendor",
     "seed",
@@ -27,7 +26,13 @@
     "qq-meme-auto.mjs",
     "qq-reply-style.mjs",
     "expression-style.mjs",
-    "expression-style.json"
+    "expression-style.json",
+    "service/*.py",
+    "service/schema.sql",
+    "service/requirements.txt",
+    "official-qq-bridge.mjs",
+    "install-official-qq-bridge.mjs",
+    "docs/*.md"
   ],
   "dsh": {
     "bundle": {
@@ -49,6 +54,7 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
+    "test:client": "node test/test_client.mjs",
     "test:install": "python -m unittest discover -s test -p test_setup.py",
     "audit:public": "python scripts/audit_public.py",
     "release:build": "python scripts/build_release.py",

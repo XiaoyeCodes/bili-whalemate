@@ -43,14 +43,8 @@ if (!text.includes('import { installOfficialQqBridge }')) {
   const backup = join(home, "backups", "official-qq-gateway-" + Date.now());
   mkdirSync(backup, { recursive: true });
   writeFileSync(join(backup, "bootstrap.js"), original);
-  writeEntry(text);
+
 }
-const bridge = join(gateway, "local-automation-bridge.mjs");
-copyFileSync(join(source, "official-qq-bridge.mjs"), bridge + ".whalemate.tmp");
-renameSync(bridge + ".whalemate.tmp", bridge);
-copyHelper("qq-meme-auto.mjs");
-for (const file of ["qq-reply-style.mjs", "expression-style.mjs", "expression-style.json"]) copyHelper(file);
-text = readFileSync(entry, "utf8").replace(/\r\n/g, "\n");
 if (!text.includes("automation?.memeAuto?.observe") && !text.includes('automation.replyStyle.route')) {
   const before = "        if (automation?.mutedSessions.has(session.header.id)) return;";
   if (text.split(before).length !== 2) throw new Error("Tencent gateway event hook changed; review before applying");
@@ -61,7 +55,6 @@ if (!text.includes("sendImage: mediaSender.sendImage")) {
   if (text.split(before).length !== 2) throw new Error("Tencent gateway lifecycle changed; review before applying");
   text = text.replace(before, "sendMarkdown: sender.sendMarkdown, sendImage: mediaSender.sendImage, logger");
 }
-writeEntry(text);
 if (!text.includes('import { chunkMarkdownText }')) {
   text = text.replace('import { createUserMessage } from "@deepseek-ai/dsh-llm";', 'import { createUserMessage } from "@deepseek-ai/dsh-llm";\nimport { chunkMarkdownText } from "../transport/chunker.js";');
 }
@@ -73,5 +66,10 @@ if (!text.includes('automation.replyStyle.route')) {
   if (text.split(oldHook).length !== 2) throw new Error('Tencent reply hook changed; review before applying');
   text = text.replace(oldHook, '        if (automation) return automation.replyStyle.route(session, event, outboundHandler, automation.mutedSessions.has(session.header.id));\n        return outboundHandler(session, event);');
 }
+const bridge = join(gateway, "local-automation-bridge.mjs");
+copyFileSync(join(source, "official-qq-bridge.mjs"), bridge + ".whalemate.tmp");
+renameSync(bridge + ".whalemate.tmp", bridge);
+copyHelper("qq-meme-auto.mjs");
+for (const file of ["qq-reply-style.mjs", "expression-style.mjs", "expression-style.json"]) copyHelper(file);
 writeEntry(text);
 console.log("Official QQ scheduler adapter installed. Restart the dsh web profile to load it.");

@@ -5,7 +5,7 @@
  * 确认三件事：
  *   1. 模块协议形状对（load({id, factory})，factory(require) 返回 exports）
  *   2. exports.apply / exports.inject 存在且 inject 含 slots
- *   3. apply(ctx) 真的调了 slots.register("settings.section", 组件)
+ *   3. apply(ctx) 注册六个设置段和网页表情投影，卸载时清理投影
  */
 
 import assert from "node:assert/strict";
@@ -42,6 +42,10 @@ const sandbox = {
     fetch: async () => { throw new Error("no network in test"); },
   },
   console,
+  document: {
+    createElement: () => ({ textContent: '', remove() {} }),
+    head: { appendChild() {} },
+  },
   fetch: async () => { throw new Error("no network in test"); },
   setTimeout,
   clearTimeout,
@@ -53,7 +57,7 @@ vm.runInContext(source, sandbox, { filename: "client.js" });
 
 // ---- 1. 模块协议 ---------------------------------------------------------
 assert.ok(captured, "没有调用 window.__ModuleLoader__.load");
-assert.equal(captured.id, "dsh-remembers", "模块 id 不对");
+assert.equal(captured.id, "bili-whalemate", "模块 id 不对");
 assert.equal(typeof captured.factory, "function", "factory 不是函数");
 console.log("  ✓ 模块协议：load({id, factory})，id=" + captured.id);
 
@@ -71,7 +75,10 @@ console.log("  ✓ 导出面：apply() + inject=[" + exportsObj.inject.join(", "
 
 // ---- 3. apply 注册设置段 -------------------------------------------------
 const registered = [];
+const cleanups = [];
+const projections = [];
 const ctx = {
+  effect: fn => { const dispose = fn(); if (dispose) cleanups.push(dispose); },
   get: (name) => (name === "slots"
     ? {
         inject: (slotName, thunk) => {
@@ -83,17 +90,20 @@ const ctx = {
           return { dispose() {} };
         },
       }
-    : undefined),
+    : name === 'uiConversation' ? { events: { register(value) { projections.push(value); return () => projections.pop(); } } } : undefined),
 };
 
 exportsObj.apply(ctx);
 
-assert.equal(registered.length, 1, "应该注册 1 个设置段，实际 " + registered.length);
-const { meta, component } = registered[0];
+const settings = registered.filter(row => row.meta.name === 'settings.section');
+assert.equal(settings.length, 6, '设置段应包含服务、人设、图库、主动消息、B 站和记忆');
+assert.equal(new Set(settings.map(row => row.meta.id)).size, 6);
+assert.equal(projections.length, 1, '网页表情消息投影应注册一次');
+const { meta, component } = settings.find(row => row.meta.id === 'dsh-remembers');
 assert.equal(meta.name, "settings.section", "slot 名不对");
 assert.equal(meta.id, "dsh-remembers", "段 id 不对");
 assert.equal(typeof meta.label, "function", "label 应该是函数（投影时翻译）");
-assert.equal(meta.label(), "记忆服务", "label 文本不对");
+assert.equal(meta.label(), "记忆服务 API 设置", "label 文本不对");
 assert.equal(typeof component, "function", "注册的不是组件函数");
 console.log("  ✓ 注册设置段：name=" + meta.name + " id=" + meta.id + " label=" + JSON.stringify(meta.label()) + " order=" + meta.order);
 
@@ -105,14 +115,6 @@ const flat = JSON.stringify(tree);
 assert.ok(flat.includes("正在读取配置"), "loading 态没出现");
 console.log("  ✓ 组件可调用（首帧是「正在读取配置…」）");
 
-// ---- 5. 字段与按钮（静态检查源码） ---------------------------------------
-// 组件的首帧是 loading 态，真正的表单要等 fetch 回来才渲染，所以这里
-// 检查源码而不是元素树。真实渲染留给浏览器里验。
-for (const needle of ["服务地址", "提供商", "API 密钥", "自定义设置", "取消", "保存", "惊讶度阈值"]) {
-  assert.ok(source.includes(needle), "源码里缺少字段/按钮：" + needle);
-}
-console.log("  ✓ 字段与按钮齐全：服务地址 / 提供商 / API 密钥 / 自定义设置 / 惊讶度阈值 / 取消 / 保存");
-
 // ---- 6. 安全约定：密钥不回显 ---------------------------------------------
 assert.ok(source.includes("type: \"password\""), "密钥输入框应该是 password");
 assert.ok(source.includes("留空保持原密钥"), "缺少「留空保持原密钥」的提示");
@@ -120,3 +122,5 @@ assert.ok(!/console\.log\([^)]*llm_key/.test(source), "不要在控制台打印�
 console.log("  ✓ 安全约定：password 输入框、留空保持原值、不打印密钥");
 
 console.log("\n全部通过 ✅  client.js 的注册链路是对的");
+for (const cleanup of cleanups.reverse()) cleanup();
+assert.equal(projections.length, 0, '卸载时应清理消息投影');

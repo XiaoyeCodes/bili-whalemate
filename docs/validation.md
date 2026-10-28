@@ -1,5 +1,13 @@
 # Validation
 
+## Comment recovery follow-up, 2026-10-29
+
+The merged source passed 84 Node tests (`node --test test/*.test.mjs vendor/bili-whale/tests/*.test.mjs` with `WHALEMATE_TEST_PYTHON` configured), 192 Python service tests with `-X utf8`, and 8 setup tests. The comment retry regression covers persisted drafts, restart, midnight, exhausted AI quota, fixed notices, feature changes, owner changes and unknown delivery. On the running installation, the previously unsent owner comment was recovered once and publicly read back; this is separate from the isolated tests and did not send test messages to strangers. See [delivery behavior](comment-delivery-fix.md).
+
+The complete 444-image archive was built locally and audited; the existing GitHub Release was not replaced. Package inspection checks that the expression policy, service, vendored transport and QQ bridge files are included and that Python caches and private runtime files are excluded. An obsolete live probe tied to a personal UID was removed from distributed source. Python's older standalone memory test fixtures emit unclosed-database resource warnings; assertions pass, and this result does not claim the fixtures are warning-free.
+
+`node test/test_client.mjs` also passed after updating its old single-section fixture to the current six settings sections and the Web meme projection. It checks the portable module ID, settings registration, initial loading view and projection cleanup; it does not replace a visual browser test.
+
 ## Source update, 2026-10-29
 
 The following checks ran against the updated portable checkout on Windows. They use fake model/network responses, temporary account directories or isolated browser fixtures; no live social messages were sent. The published v1.0.0 ZIP was not rebuilt or replaced.
