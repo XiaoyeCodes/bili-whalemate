@@ -30,7 +30,7 @@ class AutomationLedgerTest(unittest.TestCase):
 
     def test_invalid_ranges_and_types_are_rejected(self):
         for change in ({"daily": {"browse": {"min": 5, "max": 2}}}, {"dmPollSeconds": 0},
-                       {"features": {"comment": "true"}}, {"enabled": 1}, {"unrecognized": True}):
+                       {"features": {"comment": "true"}}, {"enabled": 1}, {"replyThinkingEnabled": 1}, {"unrecognized": True}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 validate_config(change)
 
@@ -59,12 +59,22 @@ class AutomationLedgerTest(unittest.TestCase):
         self.assertEqual(counts["comment"]["success"], 1)
         self.assertEqual(counts["comment"]["unknown"], 1)
 
-    def test_public_operations_share_video_deduplication(self):
+    def test_different_public_action_kinds_can_use_the_same_video(self):
         self.cfg["daily"]["recommend"] = {"min": 2, "max": 2}
         self.cfg["daily"]["interact"] = {"min": 2, "max": 2}
         first = self.ledger.reserve("2026-10-27", "recommend", "BVsame", self.cfg, 100)
         self.ledger.finish(first, "success")
-        self.assertIsNone(self.ledger.reserve("2026-10-27", "interact", "BVsame", self.cfg, 101))
+        self.assertIsNotNone(self.ledger.reserve("2026-10-27", "interact", "BVsame", self.cfg, 101))
+        self.assertIsNone(self.ledger.reserve("2026-10-28", "recommend", "BVsame", self.cfg, 102))
+
+    def test_probability_settings_merge_defaults_and_reject_invalid_values(self):
+        cfg = validate_config({"actionProbability": {"comment": 75}})
+        self.assertEqual(cfg["actionProbability"], {"recommend": 50, "comment": 75, "interact": 50})
+        for value in (0, 101, 0.5, True, "50"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                validate_config({"actionProbability": {"comment": value}})
+        with self.assertRaises(ValueError):
+            validate_config({"actionProbability": {"dmReply": 50}})
 
     def test_new_day_gets_new_quota_without_erasing_prior_success(self):
         self.cfg["daily"]["comment"] = {"min": 1, "max": 1}
@@ -104,6 +114,12 @@ class AutomationLedgerTest(unittest.TestCase):
         action = self.ledger.reserve("2026-10-27", "dmReply", "message", self.cfg, 100)
         self.ledger.finish(action, "unknown", error="response lost")
         self.assertIsNone(self.ledger.reserve("2026-10-27", "dmReply", "message", self.cfg, 99999))
+
+    def test_deferred_dm_waits_until_the_reported_budget_reset(self):
+        action = self.ledger.reserve("2026-10-27", "dmReply", "message", self.cfg, 100)
+        self.ledger.finish(action, "failed", result={"retryAt": 10000, "submission": "not-sent"})
+        self.assertIsNone(self.ledger.reserve("2026-10-27", "dmReply", "message", self.cfg, 2000))
+        self.assertEqual(self.ledger.reserve("2026-10-27", "dmReply", "message", self.cfg, 10001), action)
 
 
 if __name__ == "__main__":

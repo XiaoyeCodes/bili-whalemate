@@ -4,10 +4,12 @@ import { readFileSync, writeFileSync, appendFileSync, mkdirSync, renameSync } fr
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { timingSafeEqual } from "node:crypto";
+import { QqMemeAuto } from "./qq-meme-auto.mjs";
+import { QqReplyStyle } from "./qq-reply-style.mjs";
 
 /** Owns scheduler admission, owner pairing, and SDK sends until gateway teardown. */
 export class OfficialQqBridge {
-  constructor({ bot, manager, createUserMessage, sendMarkdown, logger, configPath }) {
+  constructor({ bot, manager, createUserMessage, sendMarkdown, sendImage, chunkText, logger, configPath }) {
     this.bot = bot;
     this.manager = manager;
     this.createUserMessage = createUserMessage;
@@ -39,6 +41,15 @@ export class OfficialQqBridge {
     this.lastNotification = null;
     this.jobPromise = null;
     this.jobAgent = null;
+    if (sendImage) {
+      this.memeAuto = new QqMemeAuto({ manager, sender: { sendImage }, logger,
+        endpoint: c.serviceEndpoint || process.env.CMEM_URL || process.env.CMEM_ENDPOINT || "http://127.0.0.1:8080",
+        token: process.env.CMEM_AUTH_TOKEN || "", memeDir: c.memeDir || process.env.CMEM_MEME_DIR || "/home/ubuntu/.dsh/media/onebot/memes" });
+    }
+    this.replyStyle = new QqReplyStyle({ manager, sendMarkdown, chunks: chunkText,
+      settings: () => this.memeAuto.json("/proactive"), logger,
+      observe: (session, event, muted) => this.memeAuto?.observe(session, event, muted),
+      onOutcome: outcome => { this.lastReply = { at: new Date().toISOString(), ...outcome }; this.journal({ type: "reply-expression", ...this.lastReply }); } });
     this.server = createServer((req, res) => {
       const task = this.route(req, res).catch(error => {
         this.logger.error(`QQ automation request failed: ${error.message}`);
@@ -60,6 +71,7 @@ export class OfficialQqBridge {
     });
     this.server.on("error", error => this.logger.error(`QQ automation listener: ${error.message}`));
     this.watchGatewayResume();
+    globalThis[Symbol.for("dsh-remembers.qq-bridge")] = this;
     return this;
   }
 
@@ -111,8 +123,8 @@ export class OfficialQqBridge {
       return this.respond(res, 401, { ok: false, error: "unauthorized" });
     }
     if (req.method === "GET" && req.url === "/status") {
-      return this.respond(res, 200, { ok: true, ready: this.ready, ownerBound: !!this.config.ownerOpenId,
-        busy: this.busy, jobs: [...this.jobs.values()], lastNotification: this.lastNotification });
+      return this.respond(res, 200, { ok: true, ready: this.ready, ownerBound: !!this.config.ownerOpenId, memeAutoReady: !!this.memeAuto, textStyleReady: !!this.replyStyle,
+        busy: this.busy, jobs: [...this.jobs.values()], lastNotification: this.lastNotification, lastReply: this.lastReply });
     }
     if (req.method !== "POST" || !["/wake", "/notify"].includes(req.url)) {
       return this.respond(res, 404, { ok: false, error: "not found" });
@@ -208,9 +220,12 @@ export class OfficialQqBridge {
   async dispose() {
     if (this.disposePromise) return this.disposePromise;
     this.closing = true;
+    if (globalThis[Symbol.for("dsh-remembers.qq-bridge")] === this) delete globalThis[Symbol.for("dsh-remembers.qq-bridge")];
     if (this.resumeHandler) this.bot.off("resumed", this.resumeHandler);
     this.disposePromise = (async () => {
       const closed = new Promise(resolve => this.server.close(resolve));
+      await this.replyStyle.dispose();
+      await this.memeAuto?.dispose();
       await Promise.allSettled([...this.requests]);
       if (this.jobAgent) this.jobAgent.cancel({ kind: "user" });
       await this.jobPromise;

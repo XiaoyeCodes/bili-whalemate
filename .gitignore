@@ -7,6 +7,9 @@ __pycache__/
 *.log
 *.sqlite3*
 *.db*
+*.jsonl
+service/_tmp/
+service/_*_tmp/
 .env
 credentials.json
 runtime.json

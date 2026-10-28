@@ -1,4 +1,23 @@
-# v1.0.0 validation
+# Validation
+
+## Source update, 2026-10-29
+
+The following checks ran against the updated portable checkout on Windows. They use fake model/network responses, temporary account directories or isolated browser fixtures; no live social messages were sent. The published v1.0.0 ZIP was not rebuilt or replaced.
+
+| Check | Result |
+|---|---|
+| `python -m unittest discover -s service -p 'test_*.py'` | 192 passed, including multi-action draws and fallback selection, per-kind deduplication, structured delivery failures, calendar budgets, persona cards and expression delivery |
+| `python -m unittest discover -s test -p test_setup.py` | 8 passed, including preserved credentials and custom service/gallery paths in the QQ bridge |
+| `node --test test/*.test.mjs vendor/bili-whale/tests/*.test.mjs` with `WHALEMATE_TEST_PYTHON` set | 80 passed; the subsequently added adapter tests passed separately as described below |
+| `node --test test/qq-adapter-install.test.mjs test/bili-gallery-upload.test.mjs test/bili-history-helper.test.mjs` | 9 passed after portable path adjustments; the two new adapter cases verify custom profiles, shared hardlink isolation, repeat installation and refusal of unsupported QQ versions |
+| `node test/bili-settings.browser.mjs <Harness source>` | Passed: invalid numbers block writes and focus the field; valid probabilities persist; budget counters refresh and reset at the hour; technical details stay collapsed |
+| `node test/persona-cards.browser.mjs <Harness source>` | Passed: card creation, editing and independent QQ/Bilibili selection |
+| `npm pack --dry-run --json` | All new runtime helpers included; nested npm exclusions keep Python caches and temporary test databases out of the package |
+| `python scripts/audit_public.py` and a separate local-private-value comparison | 191 source files passed; no loaded local credential values matched |
+
+The seeded expression tests sample 100,000 replies and cover both probability endpoints. Service tests pass with SQLite ResourceWarnings from existing test connections; these warnings are not delivery failures. Installation with real accounts, a new complete Release ZIP, macOS/Linux and the packaged Desktop executable were not revalidated for this source update.
+
+## v1.0.0 release
 
 Validation ran on Windows with Node.js 24.13, Python 3.13 and DeepSeek Harness source version 0.2.1-rc.3. The running personal installation was left in place. Installation tests used a separate DSH_HOME with a Chinese directory name, an unbound official QQ plugin, a blank OS-user home for Bilibili credentials, and separate web/service/bridge ports. No publisher account credentials or private conversation database were copied into the test installation.
 

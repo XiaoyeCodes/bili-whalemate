@@ -1,7 +1,7 @@
 """外部 LLM 客户端（OpenAI 兼容 /chat/completions）。
 
-只用于两件事：抽取事实、判定 ADD/UPDATE/DELETE。和 embedding 一样，
-失败即降级——LLM 挂了不影响检索，也不影响对话。
+用于记忆抽取与自动回复。普通调用失败返回 None；strict 调用抛出
+带错误代码的单次请求失败，不自动重试，不包含模型正文或推理内容。
 """
 
 from __future__ import annotations
@@ -11,6 +11,14 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
+
+
+class LLMRequestFailure(ValueError):
+    """One failed model request; code identifies the failure without parsing display text."""
+    def __init__(self, code: str, message: str):
+        self.code = code
+        super().__init__(message)
 
 
 class LLM:
@@ -38,9 +46,20 @@ class LLM:
     def enabled(self) -> bool:
         return bool(self.base_url and self.model)
 
-    def chat(self, system: str, user: str, max_tokens: int = 1200, *, response_format: dict | None = None) -> str | None:
-        """返回文本；任何失败都返回 None，调用方自己决定降级。"""
+    def _failure(self, code: str, message: str, strict: bool, cause=None):
+        with self._lock:
+            self.failures += 1
+            self.last_error = f"{code}: {message}"
+        if strict:
+            raise LLMRequestFailure(code, message) from cause
+        return None
+
+    def chat(self, system: str, user: str, max_tokens: int = 1200, *, response_format: dict | None = None,
+             thinking: bool | None = None, strict: bool = False) -> str | None:
+        """Return text or None; strict raises a per-request failure. Thinking controls only the official DeepSeek route."""
         if not self.enabled:
+            if strict:
+                raise LLMRequestFailure("NOT_CONFIGURED", "回复模型未配置，请检查记忆服务 API 设置")
             return None
         fields = {
             "model": self.model,
@@ -53,6 +72,8 @@ class LLM:
         }
         if response_format is not None:
             fields["response_format"] = response_format
+        if thinking is not None and urlsplit(self.base_url).hostname == "api.deepseek.com":
+            fields["thinking"] = {"type": "enabled" if thinking else "disabled"}
         payload = json.dumps(fields, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(f"{self.base_url}/chat/completions", data=payload, method="POST")
         req.add_header("Content-Type", "application/json; charset=utf-8")
@@ -66,15 +87,9 @@ class LLM:
                 body = json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", "replace")[:300]
-            with self._lock:
-                self.failures += 1
-                self.last_error = f"HTTP {exc.code}: {detail}"
-            return None
+            return self._failure("HTTP_ERROR", f"HTTP {exc.code}: {detail}", strict, exc)
         except Exception as exc:  # noqa: BLE001
-            with self._lock:
-                self.failures += 1
-                self.last_error = f"{type(exc).__name__}: {exc}"
-            return None
+            return self._failure("REQUEST_ERROR", f"{type(exc).__name__}: {exc}", strict, exc)
 
         usage = body.get("usage") or {}
         with self._lock:
@@ -83,10 +98,17 @@ class LLM:
 
         choices = body.get("choices") or []
         if not choices:
-            return None
+            return self._failure("EMPTY_RESPONSE", "模型接口没有返回回复选项，本次未发送", strict)
         message = choices[0].get("message") or {}
         content = message.get("content")
-        return content.strip() if isinstance(content, str) and content.strip() else None
+        finish_reason = choices[0].get("finish_reason")
+        if finish_reason == "length":
+            return self._failure("TRUNCATED_RESPONSE", f"模型输出达到 {max_tokens} token 上限，草稿未完成，本次未发送", strict)
+        if not isinstance(content, str) or not content.strip():
+            return self._failure("EMPTY_CONTENT", f"模型返回空白回复（finish_reason={finish_reason or '未提供'}），本次未发送", strict)
+        with self._lock:
+            self.last_error = None
+        return content.strip()
 
 
     def chat_json_vision(self, prompt: str, image_data_url: str, max_tokens: int = 300):
@@ -124,12 +146,19 @@ class LLM:
         except Exception:
             return None
 
-    def chat_json(self, system: str, user: str, max_tokens: int = 1200, *, object_only: bool = False):
-        """要求返回 JSON，失败或解析不出来都返回 None。"""
-        text = self.chat(system, user, max_tokens=max_tokens, response_format={"type": "json_object"}) if object_only else self.chat(system, user, max_tokens=max_tokens)
+    def chat_json(self, system: str, user: str, max_tokens: int = 1200, *, object_only: bool = False,
+                  thinking: bool | None = None, strict: bool = False):
+        """Read one JSON value; object_only requires a JSON object. Strict failures never trigger another model call."""
+        text = self.chat(system, user, max_tokens=max_tokens,
+            response_format={"type": "json_object"} if object_only else None, thinking=thinking, strict=strict)
         if not text:
             return None
-        return _extract_json(text)
+        value = _extract_json(text)
+        if value is None:
+            return self._failure("INVALID_JSON", "模型未返回可解析的 JSON 回复，本次未发送", strict)
+        if object_only and not isinstance(value, dict):
+            return self._failure("INVALID_JSON_OBJECT", "模型未返回 JSON 回复对象，本次未发送", strict)
+        return value
 
     def health(self) -> dict:
         return {

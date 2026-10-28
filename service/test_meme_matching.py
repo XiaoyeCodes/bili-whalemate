@@ -38,6 +38,21 @@ class MemeMatchingTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             rank_candidates(self.rows, "晚安", "invalid")
 
+    def test_general_reactions_reach_the_reviewer_without_literal_topic_overlap(self):
+        question = sticker(8, "歪头冒出小问号", "疑惑 问号 不明白")
+        self.assertEqual(rank_candidates([question], "这是张 vv；没跟上，是名字还是缩写？"), [])
+        expanded = rank_candidates([question, self.mockery], "这是张 vv；没跟上，是名字还是缩写？", include_general=True)
+        self.assertEqual([item["file"] for item in expanded], [question["file"]])
+
+    def test_general_reactions_do_not_displace_all_topic_matches_or_admit_disabled_images(self):
+        question = sticker(8, "歪头冒出小问号", "疑惑 问号 不明白")
+        question["keywords"] += " 自动回复禁用"
+        smile = sticker(9, "微笑点头", "微笑 点头")
+        expanded = rank_candidates(self.rows + [question, smile], "晚安 睡觉", include_general=True)
+        self.assertEqual(expanded[0]["file"], self.sleep["file"])
+        self.assertIn(smile["file"], [item["file"] for item in expanded])
+        self.assertNotIn(question["file"], [item["file"] for item in expanded])
+
     def test_manual_images_never_enter_automatic_candidates(self):
         self.assertEqual(rank_candidates(self.rows, "你才傻 嘲讽", "angry"), [])
 
@@ -65,6 +80,13 @@ class MemeMatchingTest(unittest.TestCase):
         invalid = self.model({"file": "unseen.webp", "reason": "这张适合"})
         self.assertFalse(select_for_reply(invalid, self.rows, "晚安", "晚安")["ok"])
 
+    def test_full_probability_allows_a_contextual_general_reaction_without_forcing_unsafe_choices(self):
+        model = self.model({"file": "1.webp", "reason": "普通回复可用温和的通用反应图"})
+        result = select_for_reply(model, self.rows, "聊会天", "用户想聊天，回复表示愿意陪聊", prefer_image=True)
+        self.assertEqual(result["memes"][0]["file"], "1.webp")
+        self.assertIn("通用反应图", model.chat_json.call_args.args[0])
+        self.assertEqual(model.chat_json.call_args.kwargs, {"max_tokens": 800, "object_only": True, "thinking": False})
+
     def test_missing_context_no_candidates_unavailable_or_malformed_never_send(self):
         for query, context, candidates in (("", "晚安", self.rows), ("晚安", "", self.rows), ("晚安", "晚安", [])):
             model = self.model(None)
@@ -81,13 +103,14 @@ class MemeMatchingTest(unittest.TestCase):
         handler = object.__new__(server.Handler)
         handler._json = lambda status, value: setattr(handler, "result", (status, value))
         handler._body = lambda: {"q": "晚安 睡觉", "context": "用户说晚安，我回复好梦", "emotion": "daily"}
+        handler._load_proactive = lambda: {"memeRate": 1}
         model = self.model({"file": "1.webp", "reason": "睡觉与道晚安相符"})
         store = SimpleNamespace(meme_candidates=Mock(return_value=[self.sleep]))
         with patch.object(server, "store", store, create=True), patch.object(server, "llm", model, create=True):
             handler._match_meme()
         self.assertEqual(handler.result[0], 200)
         self.assertEqual(handler.result[1]["memes"][0]["file"], "1.webp")
-        store.meme_candidates.assert_called_once_with("晚安 睡觉", "daily")
+        store.meme_candidates.assert_called_once_with("晚安 睡觉", "daily", include_general=True)
         for body in ([], {"q": ["晚安"]}, {"context": {"text": "晚安"}}, {"emotion": 12}):
             handler._body = lambda body=body: body
             with self.assertRaises(ValueError):

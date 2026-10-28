@@ -46,3 +46,21 @@ test('notification context requires the exact incoming author and keeps nested c
   const invalid = runHelper(modules, ['notification-context', '111', '200', '100', '123']);
   assert.equal(invalid.ok, false); assert.match(invalid.error, /发送人/);
 });
+
+test('dynamic verification matches both ID and logged-in author and reads opus images', () => {
+  const fixture = { id_str: '456', modules: { module_author: { mid: 321 }, module_dynamic: { major: {
+    opus: { summary: { text: '鱼鱼今天想晒太阳。' }, pics: [{ url: 'https://example.test/fish.png' }] },
+  } } } };
+  const modules = {
+    'config.mjs': 'export const config=()=>({});',
+    'cred.mjs': 'export const loadCred=()=>({sessdata:"fixture",bili_jct:"fixture",buvid3:"fixture"});',
+    'bili-api.mjs': `export const apiGet=async url=>url.includes('/nav')?{code:0,data:{isLogin:true,mid:321,uname:'鱼'}}:{code:0,data:{item:${JSON.stringify(fixture)}}};`,
+  };
+  const valid = runHelper(modules, ['verify-dynamic', '456']);
+  assert.equal(valid.found, true); assert.equal(valid.text, '鱼鱼今天想晒太阳。');
+  assert.deepEqual(valid.pictures, ['https://example.test/fish.png']);
+  assert.equal(runHelper(modules, ['verify-dynamic', '999']).found, false);
+  fixture.modules.module_author.mid = 999;
+  modules['bili-api.mjs'] = `export const apiGet=async url=>url.includes('/nav')?{code:0,data:{isLogin:true,mid:321,uname:'鱼'}}:{code:0,data:{item:${JSON.stringify(fixture)}}};`;
+  assert.equal(runHelper(modules, ['verify-dynamic', '456']).found, false);
+});

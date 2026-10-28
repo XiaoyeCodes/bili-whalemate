@@ -230,7 +230,8 @@ if (r.code === 0) {
   console.log(`  ✓ 已发送（HTTP ${r.http}）${SHARE ? ' · 已记入分享额度 ✓' : ' · 推送不占额度 ✓'}`)
   process.exitCode = 0
 } else {
-  console.error(`  ✗ 发送失败：HTTP ${r.http} ${explainCode(r.code)}${r.message ? `（B站原文：${r.message}）` : ''}`)
-  process.exitCode = 1
+  throw Object.assign(new Error(`发送失败：HTTP ${r.http} ${explainCode(r.code)}${r.message ? `（B站原文：${r.message}）` : ''}`), {
+    code: 'BILI_PLATFORM_REJECTED', reason: 'platform-rejected', submission: Number.isFinite(r.code) && r.code !== 0 ? 'rejected' : 'unknown', platformCode: r.code,
+  })
 }
 }

@@ -15,7 +15,8 @@ function save(state) {
 }
 function acknowledge(state,message) {
   const same=Number(state.lastSeen)===message.ts
-  return {...state,owner,lastSeen:message.ts,lastKey:message.key,lastKeys:[...new Set([...(same?(state.lastKeys??(state.lastKey?[state.lastKey]:[])):[]),message.key])],pending:undefined,queue:state.queue??[],at:new Date().toISOString()}
+  const keys=(message.messages??[message]).filter(row=>row.ts===message.ts).map(row=>row.key)
+  return {...state,owner,lastSeen:message.ts,lastKey:message.key,lastKeys:[...new Set([...(same?(state.lastKeys??(state.lastKey?[state.lastKey]:[])):[]),...keys])],pending:undefined,queue:state.queue??[],at:new Date().toISOString()}
 }
 function emit(message){console.log(json?JSON.stringify(message):'DM_HIT mid='+owner+' text='+message.text)}
 async function main(){
@@ -45,8 +46,10 @@ async function main(){
     save(state)
   }
   if(!state.queue.length){console.log(json?JSON.stringify({hit:false}):'无新私信');return 1}
-  const [row,...rest]=state.queue
-  const message={hit:true,mid:owner,name,text:row.text,ts:row.ts,key:row.key,receipt:crypto.randomUUID()}
+  const batch=argv.includes('--batch')?state.queue:[state.queue[0]]
+  const row=batch.at(-1),rest=state.queue.slice(batch.length)
+  const message={hit:true,mid:owner,name,text:batch.map(item=>item.text).join('\n'),ts:row.ts,key:row.key,receipt:crypto.randomUUID(),
+    ...(argv.includes('--batch')?{messages:batch.map(({key,text,ts})=>({key,text,ts}))}:{})}
   state={...state,owner,queue:rest}
   if(peek)save({...state,pending:message})
   else save(acknowledge(state,message))

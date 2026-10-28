@@ -28,7 +28,7 @@ export async function pullFeed(kind, { headers, pages = 1 }) {
   let cursor = ''
   let lastView = 0
   for (let p = 0; p < pages; p += 1) {
-    const url = `https://api.bilibili.com/x/msgfeed/${kind}?platform=web&build=0&mobi_app=web` + (cursor ? `&cursor=${encodeURIComponent(cursor)}` : '')
+    const url = `https://api.bilibili.com/x/msgfeed/${kind}?platform=web&build=0&mobi_app=web` + (cursor ? `&id=${encodeURIComponent(cursor.id)}&${kind === 'reply' ? 'reply_time' : 'at_time'}=${encodeURIComponent(cursor.time)}` : '')
     const j = await exactJson(await fetch(url, { headers }))
     if (j.code !== 0) throw new Error(`${kind} code=${j.code} ${j.message}`)
     if (p === 0) lastView = Number(j.data?.last_view_at ?? 0)
@@ -52,7 +52,8 @@ export async function pullFeed(kind, { headers, pages = 1 }) {
       })
     }
     cursor = j.data?.cursor ?? ''
-    if (!cursor || items.length === 0) break
+    if (!cursor || cursor.is_end || items.length === 0) break
+    if (!/^\d+$/.test(String(cursor.id)) || !/^\d+$/.test(String(cursor.time))) throw new Error(`${kind} invalid pagination cursor`)
   }
   // ⚠️ 翻页时 cursor 会给回重叠数据（实测每条都出现两遍）→ 按 id 去重
   const seen = new Set()

@@ -3,8 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-const { galleryUpload, pictureData, commentPicture, dmPicture } = await import('../vendor/bili-whale/tools/lib/gallery-picture.mjs');
+import { galleryUpload, pictureData, commentPicture, dmPicture } from '../vendor/bili-whale/tools/lib/gallery-picture.mjs';
 const picture = { image_url: 'https://i0.hdslb.com/bfs/new_dyn/test.png', image_width: 1, image_height: 1, img_size: 1, imageType: 'png' };
 
 function fixture(t) {

@@ -58,6 +58,18 @@ CREATE TABLE IF NOT EXISTS persona (
 INSERT OR IGNORE INTO persona(id, constitution, self_model, updated_at, self_updated_at)
   VALUES (1, '', '', 0, 0);
 
+CREATE TABLE IF NOT EXISTS persona_card (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS persona_channel (
+  channel TEXT PRIMARY KEY CHECK (channel IN ('qq', 'bili')),
+  card_id TEXT NOT NULL REFERENCES persona_card(id) ON DELETE RESTRICT
+);
+
 -- ---------------------------------------------------------------------------
 -- BM25 倒排
 --   doc_term 存 tf；term_stat 存 df（每写一条记忆增量维护，不做全量重扫）

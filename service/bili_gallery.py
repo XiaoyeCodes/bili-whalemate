@@ -28,7 +28,7 @@ class BiliGallery:
             raise ValueError("共享表情包概率必须在 0 到 1 之间")
         if rate == 0 or (rate < 1 and random.random() >= rate):
             return []
-        rows = self.ranker(query) if self.ranker else self.reader()
+        rows = self.ranker(query, rate == 1) if self.ranker else self.reader()
         rows = [row for row in rows if "自动回复禁用" not in row.get("keywords", "") and self._path(row["file"]).is_file()]
         return [{key: row.get(key, "") for key in ("file", "emotion", "caption", "keywords")}
                 for row in (rows[:8] if self.ranker else random.sample(rows, min(8, len(rows))))]

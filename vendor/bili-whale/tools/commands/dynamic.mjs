@@ -5,12 +5,12 @@ import { guardedFetch as fetch } from '../lib/traffic.mjs'
 //   node bili-dynamic.mjs list
 //   node bili-dynamic.mjs post --text "..." --dry | --go
 //   node bili-dynamic.mjs rm --id <dyn_id> --dry | --go
-import fs from 'node:fs'
-import path from 'node:path'
 import crypto from 'node:crypto'
 // 2026-10-21 修（外部审计）：下面 --go 路径里调了 gate()，但从来没导入过 ✗
 //   一跑到那儿就是 ReferenceError（danmaku.mjs 早就踩过同一个坑，这次补齐三条）
 import { gate, record } from '../lib/quota-gate.mjs'
+import { commentPicture } from '../lib/gallery-picture.mjs'
+import { loadCred, missingForWrite } from '../lib/cred.mjs'
 
 const argv = process.argv.slice(2)
 const mode = argv[0]
@@ -24,13 +24,10 @@ const isGo = args.has('go')
 const text = args.get('text')
 const dynId = args.get('id')
 
-const credPath = path.join((process.env.USERPROFILE || process.env.HOME || '/'), '.bili-ai', 'credentials.json')
-if (!fs.existsSync(credPath)) { console.error(`缺少凭据文件: ${credPath}`); process.exit(3) }
-const cred = JSON.parse(fs.readFileSync(credPath, 'utf8'))
-for (const k of ['sessdata', 'bili_jct', 'buvid3']) {
-  if (!cred[k] || String(cred[k]).trim() === '') { console.error(`凭据文件缺少 ${k}`); process.exit(3) }
-}
-const cookieHeader = `SESSDATA=${cred.sessdata}; bili_jct=${cred.bili_jct}; buvid3=${cred.buvid3}`
+const cred = loadCred()
+const missing = missingForWrite(cred)
+if (missing.length) { console.error(`凭据文件缺少 ${missing.join('、')}`); process.exit(3) }
+const cookieHeader = `SESSDATA=${cred.sessdata}; bili_jct=${cred.bili_jct}` + (cred.buvid3 ? `; buvid3=${cred.buvid3}` : '')
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
 const REF = 'https://t.bilibili.com/'
 
@@ -72,36 +69,39 @@ async function list(mid) {
   return (d.data?.cards ?? []).map((c) => String(c.desc?.dynamic_id_str))
 }
 
+async function main() {
 if (mode === 'list') {
   console.log('=== 当前空间动态 ===')
   const mid = await whoami()
   await list(mid)
-  process.exit(0)
+  return (process.exitCode = 0)
 }
 
 if (mode === 'post') {
-  if (!text) { console.error('post 需要 --text'); process.exit(2) }
-  if (!isDry && !isGo) { console.error('必须显式 --dry 或 --go'); process.exit(2) }
+  if (!text) { console.error('post 需要 --text'); return (process.exitCode = 2) }
+  if (!isDry && !isGo) { console.error('必须显式 --dry 或 --go'); return (process.exitCode = 2) }
   console.log('=== 登录态 ===')
   const mid = await whoami()
+  const picture = args.has('picture-data') ? commentPicture(args.get('picture-data')) : null
   const body = JSON.stringify({
-    csrf: String(cred.bili_jct),
     dyn_req: {
       content: { contents: [{ raw_text: text, type: 1, biz_id: '' }] },
-      scene: 1,
+      scene: picture ? 2 : 1,
+      ...(picture ? { pics: [picture] } : {}),
       meta: { app_meta: { from: 'create.dynamic.web', mobi_app: 'web' } },
     },
   })
-  const qs = await wbi({})
+  const qs = await wbi({ csrf: cred.bili_jct })
+  if (!qs) throw Error('动态签名所需的登录信息暂不可用，本次未提交')
   const url = `https://api.bilibili.com/x/dynamic/feed/create/dyn?${qs}`
   console.log('\n=== 将要发布 ===')
   console.log(`  POST ${url.replace(encodeURIComponent(String(cred.bili_jct)), '***csrf***').slice(0, 120)}…`)
   console.log(`  content-type: application/json    cookie: SESSDATA=***; bili_jct=***; buvid3=***`)
   console.log(`  正文(${text.length} 字): ${text}`)
-  console.log('  报文: '+JSON.stringify({...JSON.parse(body),csrf:'***csrf***'}))
-  if (isDry) { console.log('\n[dry] 未发布。'); process.exit(0) }
+  console.log('  报文: '+body)
+  if (isDry) { console.log('\n[dry] 未发布。'); return (process.exitCode = 0) }
 // P0-5（Kimi 评审 #5）：写通道也要过限额闸；不通过就停手
-if (!gate({ type: 'dynamic', target: 'dynamic', auto: process.argv.includes('--auto') })) { console.error('拒绝：限额闸不通过（额度/白名单）'); process.exit(2) }
+if (!gate({ type: 'dynamic', target: 'dynamic', auto: process.argv.includes('--auto') })) { console.error('拒绝：限额闸不通过（额度/白名单）'); return (process.exitCode = 2) }
   const r = await fetch(url, {
     method: 'POST',
     headers: { 'user-agent': UA, referer: REF, origin: 'https://t.bilibili.com', 'content-type': 'application/json', cookie: cookieHeader },
@@ -116,12 +116,14 @@ if (!gate({ type: 'dynamic', target: 'dynamic', auto: process.argv.includes('--a
     console.log(`  https://t.bilibili.com/${id}`)
   } else {
     console.log(`  errmsg: ${out.data?.errmsg ?? '-'}`)
+    console.error('BILI_FAILURE_JSON=' + JSON.stringify({ code: 'BILI_PLATFORM_REJECTED', reason: 'platform',
+      submission: 'rejected', platformCode: out.code, message: `动态发布失败（code=${out.code}）：${out.message || out.data?.errmsg || '平台拒绝'}` }))
   }
-  process.exit(r.ok && out.code===0 ? 0 : 1)
+  return (process.exitCode = r.ok && out.code===0 ? 0 : 1)
 }
 
 if (mode === 'check') {
-  if (!dynId) { console.error('check 需要 --id <dyn_id>'); process.exit(2) }
+  if (!dynId) { console.error('check 需要 --id <dyn_id>'); return (process.exitCode = 2) }
   await whoami()
   const qs = await wbi({ id: String(dynId) })
   const r = await fetch(`https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?${qs}`, {
@@ -130,7 +132,7 @@ if (mode === 'check') {
   const ct = r.headers.get('content-type') ?? ''
   if (!ct.includes('json')) {
     console.log(`  detail 端点返回 ${ct || '未知类型'}，无法用它判定（不代表动态不存在）`)
-    process.exit(0)
+    return (process.exitCode = 0)
   }
   const d = await r.json()
   console.log(`  detail code=${d.code} ${d.message ?? d.msg ?? ''}`)
@@ -142,18 +144,18 @@ if (mode === 'check') {
   } else {
     console.log('  未取到（删除后应当如此；若刚发完也没取到，多半是端点/权限问题）')
   }
-  process.exit(0)
+  return (process.exitCode = 0)
 }
 
 if (mode === 'rm') {
-  if (!dynId) { console.error('rm 需要 --id <dyn_id>'); process.exit(2) }
-  if (!isDry && !isGo) { console.error('必须显式 --dry 或 --go'); process.exit(2) }
+  if (!dynId) { console.error('rm 需要 --id <dyn_id>'); return (process.exitCode = 2) }
+  if (!isDry && !isGo) { console.error('必须显式 --dry 或 --go'); return (process.exitCode = 2) }
   console.log('=== 登录态 ===')
   await whoami()
   console.log(`\n=== 将要删除 dyn_id=${dynId} ===`)
   console.log('  POST https://api.vc.bilibili.com/dynamic_svr/v1/dynamic_svr/rm_dynamic  (multipart/form-data)')
   console.log('  fields: dynamic_id / csrf / csrf_token   cookie: SESSDATA=***; bili_jct=***')
-  if (isDry) { console.log('\n[dry] 未删除。'); process.exit(0) }
+  if (isDry) { console.log('\n[dry] 未删除。'); return (process.exitCode = 0) }
   const fd = new FormData()
   fd.append('dynamic_id', String(dynId))
   fd.append('csrf', String(cred.bili_jct))
@@ -167,8 +169,12 @@ if (mode === 'rm') {
   const hints = { 0: '成功', '-101': '账号未登录', 500404: '已经删除过该动态', 500406: '动态不是自己的' }
   console.log(`\n[go] HTTP ${r.status}  code=${out.code} ${out.message ?? out.msg ?? ''}`)
   console.log(`  ${hints[out.code] ?? ''}`)
-  process.exit(r.ok && out.code===0 ? 0 : 1)
+  return (process.exitCode = r.ok && out.code===0 ? 0 : 1)
 }
 
 console.error('用法: list | post --text "..." --dry|--go | rm --id <dyn_id> --dry|--go')
-process.exit(2)
+return (process.exitCode = 2)
+
+}
+
+await main();

@@ -2,21 +2,44 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
 import time
+import datetime as dt
+from expression_style import sample_text_style, apply_text_style
 from pathlib import Path
 from urllib import request
 
 
+def parse_cli_failure(stderr):
+    """Read the CLI failure receipt before human diagnostics are truncated."""
+    for line in reversed(stderr.splitlines()):
+        if not line.startswith("BILI_FAILURE_JSON="):
+            continue
+        try:
+            value = json.loads(line.partition("=")[2])
+        except ValueError:
+            return None
+        if (not isinstance(value, dict) or value.get("submission") not in ("not-sent", "rejected", "unknown")
+                or any(not isinstance(value.get(key), str) for key in ("code", "reason", "message"))):
+            return None
+        if "retryAt" in value and (type(value["retryAt"]) not in (int, float) or not 0 < value["retryAt"] < 10**15):
+            return None
+        return value
+    return None
+
+
 class BiliRuntime:
     """Reuse saved credentials, CLI cursors, the memory-service persona and its current LLM."""
-    def __init__(self, handler_factory, llm, persona, root, data_dir, style=None, gallery=None):
+    def __init__(self, handler_factory, llm, persona, root, data_dir, style=None, gallery=None, state=None):
         self.handler_factory, self.llm, self.persona = handler_factory, llm, persona
         self.root, self.data_dir = Path(root), Path(data_dir)
         self.style = style or (lambda: {})
         self.gallery = gallery
+        self.state = state or (lambda: {})
+        self.life = None
         self.helper = Path(__file__).resolve().parent.parent / "tools" / "bili-owner-history.mjs"
         self.upload_helper = self.helper.with_name("bili-gallery-upload.mjs")
 
@@ -82,22 +105,25 @@ class BiliRuntime:
 
     def persona_prompt(self, private=False):
         data = self.persona()
-        parts = [str(data.get(k) or "").strip() for k in ("identity", "constitution", "self_image")]
+        cards = data.get("persona_cards")
+        if cards:
+            selected = cards["active"]["bili"]
+            card = next((row for row in cards["cards"] if row["id"] == selected), None)
+            if card is None:
+                raise ValueError("B 站选择的人物卡不存在")
+            parts = [card["prompt"]]
+        else:
+            parts = [str(data.get(k) or "").strip() for k in ("identity", "constitution", "self_image")]
         if private:
             parts.append(str(data.get("user_profile") or ""))
         style = self.style()
         if style.get("textStyleEnabled") is True:
-            parts.append("颜文字和 emoji 使用下面的频率提示，不堆叠表情。图库配图仅从本轮提供的候选中选择，由宿主负责上传发送。")
-            for field, label in (("kaomojiRate", "颜文字"), ("emojiRate", "emoji")):
-                raw = style.get(field, 0.2)
-                rate = max(0.0, min(1.0, float(raw)))
-                if rate == 0:
-                    parts.append(f"{label}：这次不要使用。")
-                elif rate == 1:
-                    parts.append(f"{label}：设置为 100%，本条回复请在句尾带一个符合语境的{label}。")
-                else:
-                    parts.append(f"{label}：大约 {round(rate * 100)}% 的回复使用一个，放在句尾，按语境自然表达。")
+            parts.append("颜文字和 emoji 由宿主在正文生成后按每条回复独立抽签添加，正文不要主动添加语气表情；代码、引用和需要解释的表情保留原文。图库配图仅从本轮提供的候选中选择，由宿主负责上传发送。")
         return "\n\n".join(x for x in parts if x)
+
+    def style_text(self, text):
+        """Use a single host decision for the text submitted to the platform."""
+        return apply_text_style(text, sample_text_style(self.style()))
 
     def _gallery_offer(self, context):
         query = " ".join(str(context.get(key) or "") for key in ("title", "text", "message", "content"))[:2000]
@@ -109,6 +135,12 @@ class BiliRuntime:
         if value:
             raise ValueError("图库尚未接入，不能选择图片")
         return None
+
+    def meme_instruction(self):
+        """100% 优先配图，仍允许拒绝冒犯或与语境冲突的候选。"""
+        if float(self.style().get("memeRate", 0.2)) == 1:
+            return "\n用户设置了 100% 配图。普通聊天优先选一张贴合文案的图片，也可用微笑、点头、问号等通用反应图，不要求配字逐字复述正文。严肃内容、禁用图片或候选与语境冲突时才留空；不得编造图片。"
+        return ""
 
     def _upload_meme(self, filename, cfg):
         if not self.gallery:
@@ -151,8 +183,10 @@ class BiliRuntime:
             "recommend(向主人解释具体趣味的一两句话，不写@和链接，由程序补)、comment(独立评论该视频，不@主人)、"
             "interact({parent_rpid:必须来自interaction_candidates的rpid,text:对该条评论的自然回应}或null)。优先生成desired_actions需要的文案。"
             f"三种文案每条不超过{cfg['maxDraftChars']}字，别写系统测试或执行说明。不值得说就留空。"
+            "同一视频可能同时执行多种活动，三种文案分别表达不同的具体观察，避免重复复述。"
             "若有 gallery_candidates，选择与文案相符的一张图，返回 meme_file（必须是候选的 file）；没有候选或不合适则为 null。"
         )
+        system += self.meme_instruction()
         result = self.llm().chat_json(system, json.dumps(public, ensure_ascii=False), max_tokens=1800)
         if not isinstance(result, dict) or type(result.get("score")) is not int or not 0 <= result["score"] <= 20:
             raise ValueError("模型未返回有效的视频判断，已停止发布")
@@ -170,6 +204,16 @@ class BiliRuntime:
             elif not isinstance(interaction.get("text"), str) or not 1 <= len(interaction["text"].strip()) <= cfg["maxDraftChars"]:
                 raise ValueError("互动回复内容无效")
         result["meme_file"] = self._selected_meme(result.get("meme_file"), offered)
+        for kind in material.get('desired_actions', ['recommend', 'comment', 'interact']):
+            if kind == 'interact' and result.get(kind):
+                result[kind]['text'] = self.style_text(result[kind]['text'])
+            elif kind in ('recommend', 'comment') and result.get(kind):
+                result[kind] = self.style_text(result[kind])
+        for kind in ('recommend', 'comment', 'interact'):
+            text = result.get(kind)
+            text = text.get('text') if isinstance(text, dict) else text
+            if text and len(text) > cfg['maxDraftChars']:
+                raise ValueError('文案加入文字表情后超过字数上限，本次未发布')
         return result
 
     def _tool_allowed(self, command):
@@ -303,16 +347,23 @@ class BiliRuntime:
         if self.gallery:
             offered = self._gallery_offer(context) if images_allowed else []
             system += '\n输出格式：只返回一个完整 JSON 对象，不输出裸正文或 Markdown。例：{"text":"回复正文","meme_file":null}。text 为回复正文；meme_file 只能为 gallery_candidates 中合适图片的 file，没有候选或不合适时为 null。禁止编造文件名。'
-            draft = self.llm().chat_json(system, json.dumps({**context, "gallery_candidates": offered}, ensure_ascii=False), max_tokens=max_tokens, object_only=True)
+            if images_allowed:
+                system += self.meme_instruction()
+            draft = self.llm().chat_json(system, json.dumps({**context, "gallery_candidates": offered}, ensure_ascii=False),
+                max_tokens=max_tokens, object_only=True, thinking=cfg["replyThinkingEnabled"], strict=True)
             if not isinstance(draft, dict):
                 raise ValueError("模型未返回有效回复草稿")
             text = draft.get("text")
             filename = self._selected_meme(draft.get("meme_file"), offered)
         else:
-            text = self.llm().chat(system, json.dumps(context, ensure_ascii=False), max_tokens=max_tokens)
+            text = self.llm().chat(system, json.dumps(context, ensure_ascii=False), max_tokens=max_tokens,
+                thinking=cfg["replyThinkingEnabled"], strict=True)
             filename = None
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= max_chars or text.strip().startswith("--"):
             raise ValueError("回复未生成有效正文")
+        text = self.style_text(text.strip())
+        if len(text) > max_chars:
+            raise ValueError("回复加入文字表情后超过字数上限，本次未发送")
         return {"text": text.strip(), "meme_file": filename} if self.gallery else text.strip()
 
     def reply_notification(self, context, reply, cfg):
@@ -328,6 +379,18 @@ class BiliRuntime:
 
     @staticmethod
     def _failure(result, submitted):
+        failure = result.get("failure")
+        if failure:
+            submission = failure["submission"]
+            blocked = failure["reason"] == "manual" or failure.get("platformCode") in (12015, -105, -101)
+            message = failure["message"]
+            output = {"status": "failed" if not submitted or submission in ("not-sent", "rejected") else "unknown",
+                      "submission": submission, "reason": failure["reason"], "blocked": blocked, "error": message}
+            if failure.get("retryAt") and submission == "not-sent":
+                output["retryAt"] = failure["retryAt"] / 1000
+                when = dt.datetime.fromtimestamp(output["retryAt"], dt.timezone(dt.timedelta(hours=8))).strftime("%m-%d %H:%M:%S")
+                output["error"] = message + f"；未发送，将在北京时间 {when} 后重试"
+            return output
         text = result["combined"]
         blocked = bool(re.search(r"12015|12051|-352|风控暂停|验证码|疑似刷屏", text))
         local_cooldown = "BILI_TRAFFIC_PAUSED" in text and bool(re.search(r"cooldownMs:\s*[0-9]+", text))
@@ -351,13 +414,25 @@ class BiliRuntime:
             raise ValueError(result["combined"][-500:])
         return {"ready": "attribute=6" in result["combined"], "summary": result["combined"][-1000:]}
 
+    def write_budget_available(self, now):
+        """Check local counters before advancing an unsent budget retry."""
+        from bili_write_usage import write_usage
+        usage = write_usage(now=now)
+        risk = self.raw_config().get("risk") or {}
+        def limit(key, default):
+            value = risk.get(key, default)
+            if type(value) not in (int, float) or not 0 < value < float('inf'):
+                return default
+            return int(value)
+        return usage['daily'] < limit('writeDaily', 30) and usage['hourly'] < limit('writeHourly', 12)
+
     def dm_baseline(self, cfg):
         result = self.command(["dm-await", "--baseline"], cfg)
         if not result.get("ok"):
             raise ValueError(result["combined"][-400:])
 
     def dm_peek(self, cfg):
-        result = self.command(["dm-await", "--peek", "--json"], cfg)
+        result = self.command(["dm-await", "--peek", "--batch", "--json"], cfg)
         try:
             message = json.loads(result["stdout"])
         except ValueError as error:
@@ -366,6 +441,16 @@ class BiliRuntime:
             return None
         if not result.get("ok") or not message.get("receipt") or not message.get("key"):
             raise ValueError("私信待处理记录不完整")
+        batch = message.get("messages", [message])
+        if (not isinstance(batch, list) or not batch
+                or any(not isinstance(row, dict) or not isinstance(row.get("key"), str) or not row["key"]
+                       or type(row.get("ts")) not in (int, float) or not math.isfinite(row["ts"]) or row["ts"] < 0
+                       or not isinstance(row.get("text"), str) for row in batch)
+                or any(a["ts"] > b["ts"] for a, b in zip(batch, batch[1:]))
+                or len({row["key"] for row in batch}) != len(batch)
+                or message.get("text") != "\n".join(row["text"] for row in batch)
+                or batch[-1]["key"] != message["key"] or batch[-1]["ts"] != message.get("ts")):
+            raise ValueError("私信批次记录不完整，已保留待处理消息")
         return message
 
     def dm_ack(self, message, cfg):
@@ -381,15 +466,46 @@ class BiliRuntime:
     def draft_dm(self, message, cfg):
         self._tool_allowed("dm")
         history = self.helper_command(["dm-history"], cfg)
+        rows = self._dm_context_rows(self._dm_history_before(history["messages"], message))
         recent = [{"from": "主人" if row["sender"] == self.owner_id() else "你", "text": row["text"]}
-                  for row in history["messages"][-8:]]
+                  for row in rows[-8:]]
         system = self.persona_prompt(private=True) + (
             "\n当前渠道运行事实：这就是主人的 B 站私信会话，不是 QQ。宿主已通过 B 站接口读取了这条真实私信，"
             "并会把你的回复直接发回主人的同一 B 站会话。读写连接已经可用，你无需自己调用工具。"
             "不要依据旧的能力描述声称看不到私信、不能回复或还需要接桥。能力以这些当前运行事实为准，人设决定你的语气。"
             "自然回应主人，回复正文最多260字，不要复述系统设置。"
+            "本轮 message 是同一批待回复消息，请结合它们统一回应一次；recent 仅供理解此前的对话，不要把旧问题当成再次提问。"
         )
         return self._draft_reply(system, {"recent": recent, "message": message["text"]}, cfg, 900, 280)
+
+    def _dm_history_before(self, rows, message):
+        """Exclude this batch and later arrivals from the reply's historical context."""
+        first = message.get("messages", [message])[0]
+        position = next((index for index, row in enumerate(rows) if row["key"] == first["key"]), None)
+        if position is not None:
+            return rows[:position]
+        return [row for row in rows if row["ts"] < first["ts"]]
+
+    def _dm_context_rows(self, rows):
+        """Exclude pre-reset DM history without changing the delivery cursor."""
+        path = self.data_dir / "bili-dm-context.json"
+        try:
+            with path.open(encoding="utf-8") as stream:
+                boundary = json.load(stream)
+        except FileNotFoundError:
+            return rows
+        if (not isinstance(boundary, dict) or boundary.get("version") != 1
+                or not isinstance(boundary.get("owner"), str)
+                or type(boundary.get("timestamp")) is not int or boundary["timestamp"] < 0
+                or not isinstance(boundary.get("excludedKeys"), list)
+                or type(boundary.get("excludeEqual", False)) is not bool
+                or not all(isinstance(key, str) for key in boundary["excludedKeys"])):
+            raise ValueError("B 站私信上下文起点损坏，已停止生成回复")
+        if boundary["owner"] != self.owner_id():
+            return []
+        cutoff, excluded = boundary["timestamp"], set(boundary["excludedKeys"])
+        return [row for row in rows if row["ts"] > cutoff or
+                (row["ts"] == cutoff and not boundary.get("excludeEqual", False) and row["key"] not in excluded)]
 
     def send_dm(self, message, reply, cfg):
         reply, filename = self._reply_parts(reply)
@@ -424,7 +540,8 @@ class BiliRuntime:
                       for row in history["messages"])
         if not matched:
             return {"status": "unknown", "error": "私信接口已接受，但回读未找到消息，不会自动重发"}
-        result = {"status": "success", "replyVerified": True, "incomingKey": message["key"]}
+        result = {"status": "success", "replyVerified": True, "incomingKey": message["key"],
+                  "incomingKeys": [row["key"] for row in message.get("messages", [message])]}
         if media_warning:
             result["mediaWarning"] = media_warning
         if picture:
@@ -467,3 +584,58 @@ class BiliRuntime:
             receipt = json.load(response)
         if not receipt.get("ok"):
             raise ValueError("QQ 未接受通知")
+
+    def draft_dynamic(self, cfg, now, recent):
+        from bili_life import LifePosts
+        if self.life is None:
+            self.life = LifePosts(self)
+        return self.life.draft(cfg, now, recent)
+
+    def publish_dynamic(self, draft, cfg):
+        """Reuse the existing dynamic CLI; an accepted but unverified post is never retried."""
+        self._tool_allowed('dynamic-image')
+        args = ['dynamic', 'post', '--text', draft['text'], '--auto']
+        picture = None
+        media_warning = None
+        try:
+            preflight = self.command(args + ['--dry'], cfg)
+            if not preflight.get('ok'):
+                return self._failure(preflight, submitted=False)
+            if draft.get('meme_file') and cfg['lifePosts']['allowMemes']:
+                try:
+                    picture = self._upload_meme(draft['meme_file'], cfg)
+                    args += ['--picture-data', json.dumps(picture, ensure_ascii=False)]
+                except Exception as error:
+                    media_warning = '配图暂不可用，本条只发表文字：' + str(error)
+            self._wait_write('comment', cfg)
+        except Exception as error:
+            return {'status': 'failed', 'error': '动态发布前检查失败：' + str(error)}
+        result = {}
+        try:
+            sent = self.command(args + ['--go'], cfg)
+            match = re.search(r'dyn_id=([0-9]+)', sent.get('combined', ''))
+            if not match:
+                return self._failure(sent, submitted=True)
+            dynamic_id = match.group(1)
+            result = {'id': dynamic_id, 'url': 'https://t.bilibili.com/' + dynamic_id, 'text': draft['text'], 'title': '鱼鱼碎碎念'}
+            deadline = time.monotonic() + cfg['lifePosts']['verifySeconds']
+            while True:
+                verified = self.helper_command(['verify-dynamic', dynamic_id], cfg)
+                text_ok = verified.get('found') and verified.get('text', '').strip() == draft['text'].strip()
+                picture_ok = not picture or picture['image_url'] in [url.replace('http://', 'https://', 1) for url in verified.get('pictures', [])]
+                if text_ok and picture_ok:
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    message = '动态文字已确认，但配图尚未回读确认，不自动重发' if text_ok else '动态已获得 ID，但作者或正文回读尚未确认，不自动重发'
+                    return {**result, 'status': 'unknown', 'error': message}
+                time.sleep(min(cfg['lifePosts']['verifyPollSeconds'], remaining))
+            result.update(status='success', verified=True)
+            if picture:
+                result.update(meme_file=draft['meme_file'], pictureUrl=picture['image_url'], pictureVerified=True)
+                self._mark_meme(draft['meme_file'], result)
+            if media_warning:
+                result['mediaWarning'] = media_warning
+            return result
+        except Exception as error:
+            return {**result, 'status': 'unknown', 'error': '动态提交结果未确认，不自动重发：' + str(error)}

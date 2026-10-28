@@ -10,21 +10,26 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from life_context import LIFE_DEFAULTS, validate_life
 
-KINDS = ("browse", "recommend", "comment", "interact", "dmReply", "strangerReply", "ownerReply")
+KINDS = ("browse", "recommend", "comment", "interact", "dmReply", "strangerReply", "ownerReply", "dynamic")
 ALL_KINDS = KINDS + ("strangerNotice",)
 PUBLIC_KINDS = ("recommend", "comment", "interact")
 SHANGHAI = dt.timezone(dt.timedelta(hours=8), "Asia/Shanghai")
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 LIMIT_REPLY_TEXT = "token快要用完啦，我的主人不让我回答啦"
 DEFAULT_AUTOMATION = {
     "managed": False, "enabled": False,
-    "features": {**{kind: True for kind in KINDS}, "strangerReply": False, "ownerReply": False},
+    "features": {**{kind: True for kind in KINDS}, "strangerReply": False, "ownerReply": False, "dynamic": False},
     "daily": {"browse": {"min": 6, "max": 10}, "recommend": {"min": 1, "max": 2},
-              "comment": {"min": 0, "max": 2}, "interact": {"min": 0, "max": 1}},
+              "comment": {"min": 0, "max": 2}, "interact": {"min": 0, "max": 1}, "dynamic": {"min": 1, "max": 3}},
+    "actionProbability": {"recommend": 50, "comment": 50, "interact": 50},
+    "lifePosts": LIFE_DEFAULTS,
     "dmDailyMax": 20, "dmPollSeconds": 60, "dmRequireMention": False, "dmAllDay": True, "maxDmAttempts": 3,
     "strangerDailyMax": 5, "strangerPollSeconds": 60, "strangerAllDay": True, "strangerBatchSize": 3,
+    "replyThinkingEnabled": False,
     "ownerCommentDailyMax": 20,
+    "maxCommentSendAttempts": 3,
     "pictureVerifySeconds": 45, "pictureVerifyPollSeconds": 5,
     "startHour": 8, "endHour": 23, "minGapMinutes": 10, "maxGapMinutes": 30,
     "minInterestingScore": 13, "notifyQq": True, "maxDraftChars": 180,
@@ -44,8 +49,16 @@ def validate_config(value: dict | None) -> dict:
             if not isinstance(item, dict) or set(item) - set(KINDS):
                 raise ValueError("B 站功能开关包含未知字段")
             cfg[key].update(item)
+        elif key == "actionProbability":
+            if not isinstance(item, dict) or set(item) - set(PUBLIC_KINDS):
+                raise ValueError("公开活动概率包含未知项目")
+            if any(type(chance) is not int or not 1 <= chance <= 100 for chance in item.values()):
+                raise ValueError("公开活动抽签概率须填写 1～100 的整数；关闭活动请使用对应开关")
+            cfg[key].update(item)
+        elif key == "lifePosts":
+            cfg[key] = validate_life(item)
         elif key == "daily":
-            if not isinstance(item, dict) or set(item) - set(PUBLIC_KINDS + ("browse",)):
+            if not isinstance(item, dict) or set(item) - set(PUBLIC_KINDS + ("browse", "dynamic")):
                 raise ValueError("每日数量配置包含未知项目")
             for kind, limits in item.items():
                 if not isinstance(limits, dict) or set(limits) != {"min", "max"}:
@@ -53,7 +66,7 @@ def validate_config(value: dict | None) -> dict:
                 cfg[key][kind] = dict(limits)
         else:
             cfg[key] = item
-    for key in ("managed", "enabled", "dmRequireMention", "dmAllDay", "notifyQq"):
+    for key in ("managed", "enabled", "dmRequireMention", "dmAllDay", "notifyQq", "replyThinkingEnabled"):
         if type(cfg[key]) is not bool:
             raise ValueError(f"{key} 必须是开关")
     if type(cfg["strangerAllDay"]) is not bool:
@@ -63,9 +76,12 @@ def validate_config(value: dict | None) -> dict:
     for kind, limits in cfg["daily"].items():
         if any(type(v) is not int for v in limits.values()) or not 0 <= limits["min"] <= limits["max"] <= 500:
             raise ValueError(f"{kind} 每日数量须满足 0 ≤ 最小值 ≤ 最大值 ≤ 500")
+        if kind == 'dynamic' and limits['max'] > 20:
+            raise ValueError('碎碎念每天最多 20 条')
     bounds = {"dmDailyMax": (0, 500), "dmPollSeconds": (15, 3600), "startHour": (0, 23), "endHour": (1, 24),
               "strangerDailyMax": (0, 500), "strangerPollSeconds": (15, 3600),
               "ownerCommentDailyMax": (0, 500),
+              "maxCommentSendAttempts": (1, 10),
               "pictureVerifySeconds": (0, 180), "pictureVerifyPollSeconds": (1, 30),
               "strangerBatchSize": (1, 20),
               "minGapMinutes": (1, 1440), "maxGapMinutes": (1, 1440), "minInterestingScore": (0, 20),
@@ -73,7 +89,12 @@ def validate_config(value: dict | None) -> dict:
               "writeWaitSeconds": (0, 600), "maxDmAttempts": (1, 10), "historyDays": (1, 365), "retryDelayMinutes": (1, 1440)}
     for key, (low, high) in bounds.items():
         if type(cfg[key]) is not int or not low <= cfg[key] <= high:
-            raise ValueError(f"{key} 必须是 {low}–{high} 的整数")
+            label = {"dmPollSeconds": "私信检查间隔（秒）", "dmDailyMax": "私信每天最多回复数",
+                     "strangerPollSeconds": "评论通知检查间隔（秒）", "strangerDailyMax": "陌生人每天最多 AI 回复数",
+                     "ownerCommentDailyMax": "主人评论每天最多回复数", "strangerBatchSize": "每轮最多处理陌生人消息",
+                     "startHour": "开始时刻", "endHour": "结束时刻", "minGapMinutes": "浏览最小间隔（分钟）",
+                     "maxGapMinutes": "浏览最大间隔（分钟）", "minInterestingScore": "值得推荐的最低评分"}.get(key, key)
+            raise ValueError(f"{label}须填写 {low}～{high} 的整数")
     if cfg["startHour"] >= cfg["endHour"]:
         raise ValueError("开始时间须早于结束时间")
     if cfg["minGapMinutes"] > cfg["maxGapMinutes"]:
@@ -147,7 +168,7 @@ class AutomationLedger:
                 return 0
             target = self.plan(day, cfg)[kind]
             counts = self.counts(day)[kind]
-            consumed = sum(counts.values()) if kind in ("strangerReply", "ownerReply") else sum(counts[s] for s in ("success", "running", "unknown"))
+            consumed = sum(counts.values()) if kind in ("strangerReply", "ownerReply", "dynamic") else sum(counts[s] for s in ("success", "running", "unknown"))
             return max(0, target - consumed)
 
     def reserve(self, day, kind, target, cfg, now):
@@ -156,13 +177,16 @@ class AutomationLedger:
                 return None
             previous = self.conn.execute("SELECT * FROM actions WHERE day=? AND kind=? AND target=?", (day, kind, target)).fetchone()
             if previous and kind == "dmReply" and previous["status"] == "failed":
+                result = json.loads(previous["result"] or "{}")
+                if now < result.get("retryAt", 0):
+                    return None
                 if previous["attempts"] >= cfg["maxDmAttempts"] or now - previous["started"] < cfg["retryDelayMinutes"] * 60:
                     return None
                 self.conn.execute("UPDATE actions SET status='running',started=?,ended=NULL,error=NULL,attempts=attempts+1 WHERE id=?", (now, previous["id"]))
                 return previous["id"]
             if kind in PUBLIC_KINDS:
-                prior = self.conn.execute("SELECT 1 FROM actions WHERE target=? AND kind IN ('recommend','comment','interact') "
-                    "AND status IN ('running','success','unknown') AND started>=?", (target, now - cfg["historyDays"] * 86400)).fetchone()
+                prior = self.conn.execute("SELECT 1 FROM actions WHERE target=? AND kind=? "
+                    "AND status IN ('running','success','unknown') AND started>=?", (target, kind, now - cfg["historyDays"] * 86400)).fetchone()
                 if prior:
                     return None
             action_id = str(uuid.uuid4())
@@ -209,14 +233,58 @@ class AutomationLedger:
             rows = self.conn.execute("SELECT * FROM actions ORDER BY started DESC,rowid DESC LIMIT ?", (limit,)).fetchall()
             return [{**dict(row), "result": json.loads(row["result"] or "{}")} for row in rows]
 
+    def dynamic_history(self, limit=8):
+        """Only this character's public or uncertain dynamic texts enter future draft context."""
+        with self.lock:
+            rows = self.conn.execute("SELECT result FROM actions WHERE kind='dynamic' AND status IN ('success','unknown') ORDER BY started DESC,rowid DESC LIMIT ?", (limit,)).fetchall()
+            return [result for row in rows if (result := json.loads(row['result'] or '{}')).get('text')]
+
     def previous(self, kind, target):
         with self.lock:
             row = self.conn.execute("SELECT * FROM actions WHERE kind=? AND target=? ORDER BY started DESC LIMIT 1", (kind, target)).fetchone()
             return dict(row) if row else None
 
+    def release_dm_budget_wait(self, now, retry_delay, max_attempts):
+        """Release only a known unsent budget rejection whose retry is still scheduled."""
+        with self.lock, self.conn:
+            row = self.conn.execute("SELECT * FROM actions WHERE kind='dmReply' ORDER BY started DESC LIMIT 1").fetchone()
+            if not row or row['status'] != 'failed' or row['attempts'] >= max_attempts or now - row['started'] < retry_delay:
+                return False
+            result = json.loads(row['result'] or '{}')
+            scheduled = self.meta('next_dm_at', 0)
+            if (result.get('submission') != 'not-sent' or result.get('reason') != 'write-budget'
+                    or not result.get('retryAt') or scheduled != result['retryAt'] or scheduled <= now):
+                return False
+            result['retryAt'] = now
+            self.conn.execute("UPDATE actions SET result=? WHERE id=?", (json.dumps(result, ensure_ascii=False), row['id']))
+            self.conn.execute("INSERT INTO meta VALUES('next_dm_at',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", (json.dumps(now),))
+            self.conn.execute("INSERT INTO meta VALUES('dm_error','null') ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+            return True
+
     def incoming_seen(self, key):
         with self.lock:
             return self.conn.execute("SELECT 1 FROM incoming WHERE key=?", (key,)).fetchone() is not None
+
+    def pending_comment_retries(self, now, cfg):
+        """Return saved drafts only after a definite unsent, temporary transport failure."""
+        with self.lock:
+            rows = self.conn.execute("SELECT * FROM actions WHERE kind IN ('ownerReply','strangerReply','strangerNotice') AND status='failed' ORDER BY started,rowid").fetchall()
+            pending = []
+            for row in rows:
+                result = json.loads(row['result'] or '{}')
+                if (result.get('submission') == 'not-sent'
+                        and result.get('reason') in ('cooldown', 'write-budget', 'platform-pause')
+                        and result.get('retryPayload') and result.get('retryAt', float('inf')) <= now
+                        and row['attempts'] < cfg['maxCommentSendAttempts']
+                        and row['started'] >= now - cfg['historyDays'] * 86400):
+                    pending.append({**dict(row), 'result': result})
+            return pending
+
+    def claim_comment_retry(self, action):
+        """Reuse the charged generation slot; a restart during delivery leaves it unknown."""
+        with self.lock, self.conn:
+            return self.conn.execute("UPDATE actions SET status='running',ended=NULL,error=NULL,attempts=attempts+1 WHERE id=? AND status='failed' AND attempts=?",
+                (action['id'], action['attempts'])).rowcount == 1
 
     def remember_incoming(self, key, actor, now, status="running", error=None):
         with self.lock, self.conn:
@@ -260,6 +328,8 @@ class BiliAutomation:
                 "nextBrowseAt": self.ledger.meta("next_browse_at"), "lastError": self.ledger.meta("last_error"),
                 "dmError": self.ledger.meta("dm_error"), "blocked": self.ledger.meta("blocked"),
                 "strangerError": self.ledger.meta("stranger_error"), "limitReplyText": LIMIT_REPLY_TEXT,
+                "dynamicError": self.ledger.meta("dynamic_error"), "dynamicSchedule": self.ledger.meta("dynamic_schedule"),
+                "lastDynamicPreview": self.ledger.meta("dynamic_preview"),
                 "lastPreview": self.ledger.meta("last_preview"), "events": self.ledger.events()}
 
     def launch(self, kind=None, dry_run=False):
@@ -295,6 +365,12 @@ class BiliAutomation:
             hour = dt.datetime.fromtimestamp(now, SHANGHAI).hour
             in_window = cfg["startHour"] <= hour < cfg["endHour"]
             if kind in (None, "dmReply") and cfg["features"]["dmReply"] and (in_window or cfg["dmAllDay"]):
+                if not manual and now < self.ledger.meta("next_dm_at", 0):
+                    try:
+                        if self.backend.write_budget_available(now):
+                            self.ledger.release_dm_budget_wait(now, cfg["retryDelayMinutes"] * 60, cfg["maxDmAttempts"])
+                    except (OSError, ValueError, TypeError, AttributeError):
+                        pass  # Keep the original retry time if usage cannot be read.
                 if manual or now >= self.ledger.meta("next_dm_at", 0):
                     if not dry_run:
                         self.ledger.set_meta("next_dm_at", now + cfg["dmPollSeconds"])
@@ -306,7 +382,11 @@ class BiliAutomation:
                     if not dry_run:
                         self.ledger.set_meta("next_stranger_at", now + cfg["strangerPollSeconds"])
                         self._strangers(cfg, now, kind)
-            if kind in ("strangerReply", "ownerReply") or self.stopping.is_set():
+            if kind in ("strangerReply", "ownerReply") or self.stopping.is_set() or self.ledger.meta('blocked'):
+                return
+            if kind == 'dynamic' or (kind is None and not dry_run and cfg['features']['dynamic']):
+                self._dynamic(cfg, now, dry_run, manual)
+            if kind == 'dynamic' or self.stopping.is_set() or self.ledger.meta('blocked'):
                 return
             if not manual and (not in_window or now < self.ledger.meta("next_browse_at", 0)):
                 return
@@ -361,6 +441,8 @@ class BiliAutomation:
             except Exception as error:
                 result = {"status": "unknown", "error": "私信请求结果不明：" + str(error)}
             self.ledger.finish(action, result["status"], result=result, error=result.get("error"))
+            if result.get("retryAt") and result.get("submission") == "not-sent":
+                self.ledger.set_meta("next_dm_at", max(now + cfg["dmPollSeconds"], result["retryAt"]))
             if result["status"] == "success":
                 self.backend.dm_ack(message, cfg)
                 self.ledger.set_meta("dm_error", result.get("mediaWarning"))
@@ -370,6 +452,82 @@ class BiliAutomation:
                 raise ValueError(result.get("error") or "私信发送结果未确认")
         except Exception as error:
             self.ledger.set_meta("dm_error", str(error))
+
+    def _dynamic_schedule(self, cfg, now):
+        settings = cfg['lifePosts']
+        local = dt.datetime.fromtimestamp(now, SHANGHAI)
+        day = local.date().isoformat()
+        target = self.ledger.plan(day, cfg)['dynamic']
+        fingerprint = [day, target, settings['startHour'], settings['endHour'], settings['minGapMinutes']]
+        schedule = self.ledger.meta('dynamic_schedule')
+        if schedule and schedule.get('fingerprint') == fingerprint:
+            return schedule
+        spent = sum(self.ledger.counts(day)['dynamic'].values())
+        gap = settings['minGapMinutes'] * 60
+        start = max(now, local.replace(hour=settings['startHour'], minute=0, second=0, microsecond=0).timestamp(),
+            self.ledger.meta('last_dynamic_attempt', 0) + gap)
+        end = local.replace(hour=0, minute=0, second=0, microsecond=0).timestamp() + settings['endHour'] * 3600 - 1
+        count = min(max(0, target - spent), max(0, int((end - start) // gap) + 1)) if start <= end else 0
+        room = end - start - max(0, count - 1) * gap
+        points = sorted(random.uniform(0, max(0, room)) for _ in range(count))
+        slots = [None] * spent + [start + i * gap + point for i, point in enumerate(points)]
+        schedule = {'day': day, 'fingerprint': fingerprint, 'slots': slots, 'target': target,
+            'note': '剩余发表时段不足，不会为了凑数量密集发布' if spent + count < target else ''}
+        self.ledger.set_meta('dynamic_schedule', schedule)
+        return schedule
+
+    def _dynamic(self, cfg, now, dry_run, manual):
+        action = None
+        draft = None
+        submitting = False
+        try:
+            recent = self.ledger.dynamic_history(cfg['lifePosts']['recentPosts'])
+            if dry_run:
+                draft = self.backend.draft_dynamic(cfg, now, recent)
+                self.ledger.set_meta('dynamic_preview', {**draft, 'at': now, 'published': False})
+                self.ledger.set_meta('dynamic_error', None)
+                return
+            if not cfg['features']['dynamic']:
+                raise ValueError('鱼鱼碎碎念尚未启用，请先保存设置')
+            local = dt.datetime.fromtimestamp(now, SHANGHAI)
+            settings = cfg['lifePosts']
+            if not settings['startHour'] <= local.hour < settings['endHour']:
+                if manual:
+                    raise ValueError('当前不在碎碎念发表时段，预览不受时段限制')
+                return
+            if self.ledger.remaining(day_at(now), 'dynamic', cfg) <= 0:
+                if manual:
+                    raise ValueError('今天的碎碎念尝试次数已达到随机目标')
+                return
+            if now < self.ledger.meta('last_dynamic_attempt', 0) + settings['minGapMinutes'] * 60:
+                if manual:
+                    raise ValueError('碎碎念最短发表间隔尚未结束')
+                return
+            schedule = self._dynamic_schedule(cfg, now)
+            spent = sum(self.ledger.counts(day_at(now))['dynamic'].values())
+            due = schedule['slots'][spent] if spent < len(schedule['slots']) else None
+            if not manual and (due is None or now < due):
+                return
+            action = self.ledger.reserve(day_at(now), 'dynamic', f'life:{day_at(now)}:{spent + 1}', cfg, now)
+            if not action:
+                return
+            self.ledger.set_meta('last_dynamic_attempt', now)
+            draft = self.backend.draft_dynamic(cfg, now, recent)
+            fresh = validate_config(self.config())
+            if self.stopping.is_set() or not self.enabled() or not fresh['enabled'] or not fresh['features']['dynamic']:
+                raise ValueError('发送前碎碎念已关闭，本次未发布')
+            from bili_life import validate_post
+            validate_post(draft['text'], fresh, self.ledger.dynamic_history(fresh['lifePosts']['recentPosts']))
+            submitting = True
+            result = self.backend.publish_dynamic(draft, fresh)
+            self.ledger.finish(action, result['status'], result={**draft, **result, 'meme_file': result.get('meme_file')}, error=result.get('error'))
+            self.ledger.set_meta('dynamic_error', result.get('error'))
+            if result.get('blocked'):
+                self.ledger.set_meta('blocked', result['error'])
+        except Exception as error:
+            if action:
+                self.ledger.finish(action, 'unknown' if submitting else 'failed', result=draft, error=str(error))
+            self.ledger.set_meta('dynamic_error', str(error))
 
     def _video(self, cfg, now, requested, dry_run):
         day = day_at(now)
@@ -416,31 +574,45 @@ class BiliAutomation:
         if not choices:
             self.ledger.set_meta("last_error", "没有足够依据生成相关评论，本次只计浏览")
             return
-        kind = random.choices(choices, weights=[self.ledger.remaining(day, k, cfg) for k in choices])[0]
-        fresh = validate_config(self.config())
-        if not self.enabled():
-            return
-        action = self.ledger.reserve(day, kind, video["bvid"], fresh, time.time())
-        if not action:
-            return
-        try:
-            result = self.backend.publish(kind, material, draft, fresh)
-            self.ledger.finish(action, result["status"], result=result, error=result.get("error"))
-            if result["status"] != "success":
-                self.ledger.set_meta("last_error", result.get("error") or "发布结果未确认")
-                if result.get("blocked"):
-                    self.ledger.set_meta("blocked", result["error"])
-            else:
-                self.ledger.video_done(video["bvid"], video, "done")
-                self.ledger.set_meta("last_error", result.get("mediaWarning"))
-                if fresh["notifyQq"] and kind == "recommend":
-                    try:
-                        self.backend.notify(result, fresh)
-                    except Exception as error:
-                        self.ledger.set_meta("last_error", "B 站已发布，但 QQ 通知失败：" + str(error))
-        except Exception as error:
-            self.ledger.finish(action, "unknown", error="请求结果不明，请核查后再执行：" + str(error))
-            raise
+        selected = [requested] if requested in PUBLIC_KINDS else [
+            kind for kind in choices if random.random() * 100 < cfg["actionProbability"][kind]]
+        if not selected:
+            selected = random.choices(choices, weights=[self.ledger.remaining(day, kind, cfg) for kind in choices])
+        random.shuffle(selected)
+        errors = []
+        for kind in selected:
+            fresh = validate_config(self.config())
+            if self.stopping.is_set() or not self.enabled() or not fresh["enabled"]:
+                break
+            if kind == "recommend" and draft["score"] < fresh["minInterestingScore"]:
+                continue
+            action = self.ledger.reserve(day, kind, video["bvid"], fresh, time.time())
+            if not action:
+                continue
+            try:
+                result = self.backend.publish(kind, material, draft, fresh)
+                self.ledger.finish(action, result["status"], result=result, error=result.get("error"))
+                if result["status"] != "success":
+                    errors.append(result.get("error") or "发布结果未确认")
+                    if result.get("blocked"):
+                        self.ledger.set_meta("blocked", result["error"])
+                    if result["status"] == "unknown" or result.get("blocked") or result.get("reason") in ("write-budget", "read-budget", "platform-pause"):
+                        break
+                else:
+                    self.ledger.video_done(video["bvid"], video, "done")
+                    if result.get("mediaWarning"):
+                        errors.append(result["mediaWarning"])
+                    if fresh["notifyQq"] and kind == "recommend":
+                        try:
+                            self.backend.notify(result, fresh)
+                        except Exception as error:
+                            errors.append("B 站已发布，但 QQ 通知失败：" + str(error))
+            except Exception as error:
+                message = "请求结果不明，请核查后再执行：" + str(error)
+                self.ledger.finish(action, "unknown", error=message)
+                errors.append(message)
+                break
+        self.ledger.set_meta("last_error", "；".join(errors) if errors else None)
 
     @staticmethod
     def notification_key(item):
@@ -448,6 +620,9 @@ class BiliAutomation:
 
     def _strangers(self, cfg, now, requested=None):
         try:
+            processed = self._retry_comments(cfg, now, requested)
+            if processed >= cfg['strangerBatchSize'] or self.ledger.meta('blocked'):
+                return
             items = self.backend.notifications(cfg)
             if not self.ledger.meta("stranger_baseline"):
                 for item in items:
@@ -456,7 +631,6 @@ class BiliAutomation:
                 return
             if cfg["features"]["ownerReply"] and not self.ledger.meta("owner_comment_baseline"):
                 self.ledger.set_meta("owner_comment_baseline", now)
-            processed = 0
             for item in items:
                 key = self.notification_key(item)
                 if self.ledger.incoming_seen(key):
@@ -500,12 +674,13 @@ class BiliAutomation:
                             continue
                         text = LIMIT_REPLY_TEXT
                     fresh = validate_config(self.config())
-                    if not self.enabled() or not fresh["enabled"] or not fresh["features"][category]:
+                    if self.stopping.is_set() or not self.enabled() or not fresh["enabled"] or not fresh["features"][category]:
                         self.ledger.finish(action, "failed", error="发送前功能已关闭，本次未提交")
                         self.ledger.finish_incoming(key, "cancelled")
                         return
                     submitting = True
                     result = self.backend.reply_notification(context, text, fresh)
+                    result = self._comment_receipt(result, key, context, text, 1, fresh['maxCommentSendAttempts'])
                     self.ledger.finish(action, result["status"], result=result, error=result.get("error"))
                     self.ledger.finish_incoming(key, result["status"], result.get("error"))
                     if result["status"] != "success":
@@ -522,3 +697,56 @@ class BiliAutomation:
                     self.ledger.set_meta("stranger_error", str(error))
         except Exception as error:
             self.ledger.set_meta("stranger_error", str(error))
+
+    @staticmethod
+    def _comment_receipt(result, key, context, reply, attempts, maximum):
+        """Keep an unsent draft durable without treating rejected or uncertain writes as retryable."""
+        result = {**result, 'parent_rpid': context['parent_rpid']}
+        if (result['status'] == 'failed' and result.get('submission') == 'not-sent'
+                and result.get('reason') in ('cooldown', 'write-budget', 'platform-pause')
+                and result.get('retryAt')):
+            if attempts < maximum:
+                result['retryPayload'] = {'key': key, 'context': context, 'reply': reply}
+            else:
+                result.pop('retryAt', None)
+                result['error'] = '评论发送尝试已达上限，本条未发送，不再自动重试'
+        return result
+
+    def _retry_comments(self, cfg, now, requested):
+        processed = 0
+        for action in self.ledger.pending_comment_retries(now, cfg):
+            payload = action['result']['retryPayload']
+            context, reply, key = payload['context'], payload['reply'], payload['key']
+            category = 'ownerReply' if context.get('is_owner') else 'strangerReply'
+            fresh = validate_config(self.config())
+            if self.stopping.is_set() or not self.enabled() or not fresh['enabled']:
+                break
+            if (requested and requested != category) or not fresh['features'][category]:
+                continue
+            if processed >= fresh['strangerBatchSize']:
+                break
+            if not self.ledger.claim_comment_retry(action):
+                continue
+            processed += 1
+            submitting = False
+            try:
+                is_owner = context['actorUid'] == self.backend.owner_id()
+                if is_owner != bool(context.get('is_owner')):
+                    raise ValueError('主人配置已改变，旧评论草稿未发送')
+                self.backend.notification_context({'oid': context['aid'], 'rpid': context['parent_rpid'],
+                    'root': context['root'], 'mid': context['actorUid']}, fresh)
+                fresh = validate_config(self.config())
+                if self.stopping.is_set() or not self.enabled() or not fresh['enabled'] or not fresh['features'][category]:
+                    raise ValueError('重试前功能已关闭，旧评论草稿未发送')
+                submitting = True
+                result = self.backend.reply_notification(context, reply, fresh)
+                result = self._comment_receipt(result, key, context, reply, action['attempts'] + 1, fresh['maxCommentSendAttempts'])
+            except Exception as error:
+                result = {'status': 'unknown' if submitting else 'failed', 'parent_rpid': context['parent_rpid'], 'error': str(error)}
+            self.ledger.finish(action['id'], result['status'], result, result.get('error'))
+            self.ledger.finish_incoming(key, result['status'], result.get('error'))
+            self.ledger.set_meta('stranger_error', result.get('error'))
+            if result.get('blocked'):
+                self.ledger.set_meta('blocked', result['error'])
+                break
+        return processed

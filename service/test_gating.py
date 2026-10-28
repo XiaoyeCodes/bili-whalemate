@@ -7,7 +7,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from extractor import ExtractConfig, Extractor  # noqa: E402
+from extractor import DECIDE_SYSTEM, EXTRACT_SYSTEM, ExtractConfig, Extractor  # noqa: E402
 from memory_core import MemoryInput, MemoryStore  # noqa: E402
 from surprisal import SurprisalGate, lexical_surprisal  # noqa: E402
 
@@ -85,9 +85,9 @@ class MockLLM:
         self._decide = decide
 
     def chat_json(self, system, user, max_tokens=0):
-        if "抽取值得长期记住的事实" in system:
+        if system == EXTRACT_SYSTEM:
             return self._extract
-        if "管理一个记忆库" in system:
+        if system == DECIDE_SYSTEM:
             return self._decide(user)
         return None
 

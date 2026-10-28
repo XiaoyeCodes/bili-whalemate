@@ -22,7 +22,8 @@ class StrangerTest(unittest.TestCase):
         self.backend = Mock()
         self.backend.owner_id.return_value = "123"
         self.backend.notifications.return_value = []
-        self.backend.notification_context.side_effect = lambda item, cfg: {"parent_rpid": item["rpid"], "text": "你好"}
+        self.backend.notification_context.side_effect = lambda item, cfg: {"parent_rpid": item["rpid"], "text": "你好",
+            "actorUid": item['mid'], "aid": item['oid'], "root": item.get('root', item['rpid'])}
         self.backend.draft_stranger.return_value = "你好呀"
         self.backend.reply_notification.side_effect = lambda ctx, text, cfg: {"status": "success", "parent_rpid": ctx["parent_rpid"], "text": text}
         self.enabled = True
@@ -154,6 +155,113 @@ class StrangerTest(unittest.TestCase):
         self.backend.draft_stranger.side_effect = draft
         self.run_once([self.item()])
         self.backend.reply_notification.assert_not_called()
+
+    def defer_reply(self, owner=False, reason='cooldown'):
+        self.cfg['features']['ownerReply'] = True
+        self.ledger.set_meta('owner_comment_baseline', self.now - 10)
+        self.backend.draft_owner_comment.return_value = '主人，鱼在呢'
+        self.backend.reply_notification.side_effect = None
+        self.backend.reply_notification.return_value = {'status': 'failed', 'submission': 'not-sent',
+            'reason': reason, 'retryAt': self.now + 60, 'error': 'waiting'}
+        self.run_once([self.item(actor='123' if owner else '999')], 'ownerReply' if owner else 'strangerReply')
+
+    def test_cooldown_reuses_saved_draft_after_restart_without_an_inbox_item(self):
+        self.defer_reply(owner=True)
+        self.run_once([], 'ownerReply')
+        self.backend.reply_notification.assert_called_once()
+        self.ledger.close()
+        self.ledger = AutomationLedger(self.path)
+        self.addCleanup(self.ledger.close)
+        self.controller.ledger = self.ledger
+        self.now += 61
+        self.backend.reply_notification.return_value = {'status': 'success', 'rpid': '200'}
+        self.run_once([], 'ownerReply')
+        self.run_once([self.item(actor='123')], 'ownerReply')
+        self.assertEqual(self.backend.reply_notification.call_count, 2)
+        self.backend.draft_owner_comment.assert_called_once()
+        self.assertEqual(self.backend.reply_notification.call_args.args[1], '主人，鱼在呢')
+        event = self.ledger.events()[0]
+        self.assertEqual((event['status'], event['attempts']), ('success', 2))
+
+    def test_failed_send_retry_does_not_consume_another_ai_slot_or_send_fixed_notice(self):
+        self.defer_reply()
+        self.now += 61
+        self.backend.reply_notification.return_value = {'status': 'success'}
+        self.run_once([])
+        self.backend.draft_stranger.assert_called_once()
+        self.assertEqual(self.backend.reply_notification.call_args.args[1], '你好呀')
+        self.assertEqual(self.ledger.counts(day_at(self.now))['strangerNotice']['success'], 0)
+
+    def test_retry_waits_for_budget_reset_across_midnight(self):
+        self.defer_reply(reason='write-budget')
+        self.now += 86400
+        self.backend.reply_notification.return_value = {'status': 'success'}
+        self.run_once([])
+        self.backend.draft_stranger.assert_called_once()
+        self.assertEqual(len(self.ledger.events()), 1)
+        self.assertEqual(self.ledger.events()[0]['status'], 'success')
+
+    def test_fixed_notice_retry_uses_no_model_and_keeps_one_notice_reservation(self):
+        self.cfg['strangerDailyMax'] = 0
+        self.defer_reply()
+        self.now += 61
+        self.backend.reply_notification.return_value = {'status': 'success'}
+        self.run_once([])
+        self.run_once([self.item('101')])
+        self.backend.draft_stranger.assert_not_called()
+        self.assertEqual(self.backend.reply_notification.call_count, 2)
+        self.assertEqual(self.backend.reply_notification.call_args.args[1], LIMIT_REPLY_TEXT)
+
+    def test_retries_are_bounded_and_unknown_delivery_is_terminal(self):
+        self.defer_reply()
+        self.cfg['maxCommentSendAttempts'] = 2
+        self.now += 61
+        self.run_once([])
+        self.now += 61
+        self.run_once([])
+        self.assertEqual(self.backend.reply_notification.call_count, 2)
+
+    def test_retry_timeout_does_not_send_again(self):
+        self.defer_reply()
+        self.now += 61
+        self.backend.reply_notification.side_effect = TimeoutError('unknown transport result')
+        self.run_once([])
+        self.now += 61
+        self.run_once([])
+        self.assertEqual(self.backend.reply_notification.call_count, 2)
+        self.assertEqual(self.ledger.events()[0]['status'], 'unknown')
+
+    def test_disabled_feature_defers_retry_and_rechecks_before_sending(self):
+        self.defer_reply()
+        self.now += 61
+        self.cfg['features']['strangerReply'] = False
+        self.run_once([])
+        self.backend.reply_notification.assert_called_once()
+        self.cfg['features']['strangerReply'] = True
+        def disabled(item, cfg):
+            self.cfg['features']['strangerReply'] = False
+        self.backend.notification_context.side_effect = disabled
+        self.run_once([])
+        self.backend.reply_notification.assert_called_once()
+
+    def test_changed_owner_or_deleted_comment_stops_saved_reply(self):
+        self.defer_reply(owner=True)
+        self.now += 61
+        self.backend.owner_id.return_value = '456'
+        self.run_once([], 'ownerReply')
+        self.backend.reply_notification.assert_called_once()
+        self.assertEqual(self.ledger.events()[0]['status'], 'failed')
+
+    def test_platform_block_in_comment_path_stops_dynamic_and_video_in_same_tick(self):
+        self.cfg['features']['dynamic'] = True
+        self.backend.dm_peek.return_value = None
+        self.backend.notifications.return_value = [self.item()]
+        self.backend.reply_notification.side_effect = None
+        self.backend.reply_notification.return_value = {'status': 'failed', 'blocked': True, 'error': 'manual login required'}
+        self.controller.run_lock.acquire()
+        self.controller._run_owned(None, False, True, self.now)
+        self.backend.draft_dynamic.assert_not_called()
+        self.backend.feed.assert_not_called()
 
 
 class StrangerRuntimeTest(unittest.TestCase):

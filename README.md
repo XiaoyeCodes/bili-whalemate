@@ -2,6 +2,8 @@
 
 把大肥鱼的人设、回复能力、B 站活动、官方 QQ 推送、表情图库和设置迁移到另一台电脑的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)。这是基于 dsh-remembers 和 dsh-bili-whale 的社区组合包，不是 DeepSeek 或腾讯官方产品。
 
+`main` 分支包含下述最新功能；下面的一句话安装仍下载已发布的 v1.0.0 完整包。源码更新不会覆盖该 Release，使用新功能需要用更新后的源码和已校验图库重新安装。
+
 ## 一句话安装
 
 把这句话发给另一台电脑上的开发助手：
@@ -39,17 +41,23 @@ Windows PowerShell 也可以直接执行：
 
 | 功能 | 保存的设置 |
 |---|---|
-| 人设与话术 | 大肥鱼宪法、鲸鱼娘形象、身份卡、说话风格与口癖；QQ 和 B 站共用 |
+| 人设与话术 | 保留已有设定；支持多张人物卡，QQ 和 B 站可分别选择，也可选择同一张 |
 | 刷视频 | 每天随机 6–10 条；08:00–23:00，间隔随机 10–30 分钟 |
 | 推荐主人 | 每天随机 1–2 次；根据内容写推荐语、评论区 @ 主人，并推送官方 QQ |
 | 独立评论 / 评论互动 | 每天随机 0–2 / 0–1 次，分别可开关 |
+| 每轮公开活动 | 推荐、独立评论、评论互动各自抽签，默认各 50%；符合条件时执行 1–3 种 |
+| 碎碎念动态 | 默认关闭；可设置主题、时段、每日范围和图库配图，天气与节假日使用单独核实的数据 |
 | 主人私信 / 评论 @ | 每天最多 20 / 20 次 |
 | 陌生人 @ 或回复 | 每天最多 5 次 AI 回复；超限固定文本不调用模型，同一陌生人每天最多一次超限提示 |
 | 表情与图库 | 444 张及分包、描述、关键词、情绪、禁用标记；表情包 / 颜文字 / emoji 各 20% |
 | 图片发送 | QQ、B 站私信、B 站顶层独立评论和推荐；楼中楼只发文字 |
 | 记忆能力 | 新电脑重新积累、检索与整理；使用干净数据库，勿扰时间 23:00–08:00 |
 
-每日数量是随机目标，仍受登录、互关、接口限制、内容质量和发布结果影响，不保证硬凑满。20% 用于决定是否提供表情候选，匹配不合适时可以不发，并非每五条必发一张。公开陌生人互动不注入私人聊天原文；匹配失败不会随机补图。
+每日数量是随机目标，仍受登录、互关、接口限制、内容质量和发布结果影响，不保证硬凑满。每轮对已启用、有剩余额度且满足内容条件的公开活动分别抽签；全未命中时补选一种，随机排列执行。待核查、接口暂停或额度耗尽会中止后续发送，没有合适活动时只浏览。
+
+颜文字和 emoji 按设置独立抽样，QQ/Web 正文由宿主处理。表情包概率决定是否尝试匹配，匹配不合适时可以不发，并非每五条必发一张。公开陌生人互动不注入私人聊天原文；匹配失败不会随机补图。主人连续私信按消息顺序合并处理，发送结果不明时保留待核查记录，避免自动重复发送。
+
+写入额度页展示当前账号的实际用量与已保存上限；小时额度在北京时间整点恢复，每日额度在北京时间零点恢复，详见[升级说明](docs/hourly-budget-upgrade.md)。保存前会定位无效数字字段，错误摘要与技术详情分别显示。
 
 超限提示为 `token快要用完啦，我的主人不让我回答啦`，不调用 LLM。正常理解视频、聊天、生成评论和图片匹配仍可能消耗本机模型 token。所有开关、数量、时段、概率、图库和人设都能在设置页修改；不启用旧鲸鱼插件的独立人设、轮询或 OneBot/NapCat。
 
@@ -73,12 +81,13 @@ Windows 已使用独立 DSH_HOME、空白账号目录、不同端口进行安装
 
 ```powershell
 node --test test/*.test.mjs
+node --test vendor/bili-whale/tests/*.test.mjs
 python -m unittest discover -s test -p test_setup.py
-python -m unittest discover -s service -p 'test_bili*.py'
+python -m unittest discover -s service -p 'test_*.py'
 python scripts/audit_public.py
 python scripts/build_release.py
 ```
 
-Python 测试需先安装 `service/requirements.txt`。构建 Release 需在本地 `gallery/` 放入 manifest 对应资源；Git 不重复保存 300 MB 二进制。每张图的哈希在 `seed/gallery-manifest.json`，安装前完整校验，损坏则停止。
+Python 测试需先安装 `service/requirements.txt`；Node 的服务生命周期测试使用 `WHALEMATE_TEST_PYTHON` 指定安装了这些依赖的解释器。离线设置页验收可运行 `node test/bili-settings.browser.mjs <Harness源码目录>` 和 `node test/persona-cards.browser.mjs <Harness源码目录>`，使用 Harness 的 Playwright 依赖和内置假服务，不访问实际账号。构建 Release 需在本地 `gallery/` 放入 manifest 对应资源；Git 不重复保存 300 MB 二进制。每张图的哈希在 `seed/gallery-manifest.json`，安装前完整校验，损坏则停止。
 
 安装器和端到端验收目前覆盖 **Windows**；macOS/Linux 未验收。验证的 Harness 源码版本为 0.2.1-rc.3；desktop profile 由同一安装器处理，但本次没有在另一台电脑或打包桌面应用上实测。依赖与素材见 [THIRD_PARTY.md](THIRD_PARTY.md)。

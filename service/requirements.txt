@@ -4,3 +4,4 @@ numpy>=1.26
 PyYAML>=6.0
 qrcode>=8.0,<9
 Pillow>=11,<14
+chinesecalendar>=1.11,<2

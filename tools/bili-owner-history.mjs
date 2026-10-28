@@ -2,10 +2,10 @@
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const root = process.env.DSH_HOME || join(homedir(), '.dsh');
-const bili = process.env.CMEM_BILI_DIR || join(root, 'sources', 'dsh-bili-whale');
+const bili = process.env.CMEM_BILI_DIR || fileURLToPath(new URL('../vendor/bili-whale/', import.meta.url));
 const load = name => import(pathToFileURL(join(bili, 'tools', 'lib', name)).href);
 const { config } = await load('config.mjs');
 const { loadCred } = await load('cred.mjs');
@@ -91,6 +91,18 @@ try {
       return { ...row, picture };
     });
     console.log(JSON.stringify({ ok: true, self: String(nav.data.mid), selfName: nav.data.uname, owner, messages }));
+  } else if (mode === 'verify-dynamic') {
+    const [id] = args;
+    if (!/^[0-9]+$/.test(id || '')) throw Error('无效的动态 ID');
+    const me = await identity();
+    const data = await apiGet(`https://api.bilibili.com/x/polymer/web-dynamic/v1/detail?id=${id}`, headers, { noCache: true });
+    if (data.code !== 0) throw Error(`动态回读失败 code=${data.code}`);
+    const item = data.data?.item;
+    const author = item?.modules?.module_author;
+    const dynamic = item?.modules?.module_dynamic;
+    console.log(JSON.stringify({ ok: true, found: item?.id_str === id && String(author?.mid) === me.self,
+      text: dynamic?.desc?.text || dynamic?.major?.opus?.summary?.text || '',
+      pictures: (dynamic?.major?.draw?.items || dynamic?.major?.opus?.pics || []).map(p => p.src || p.url || p.img_src).filter(Boolean) }));
   } else if (mode === 'verify-comment') {
     const [aid, bvid, rootId, replyId] = args;
     if (![aid, rootId, replyId].every(v => /^\d+$/.test(v || '')) || !/^BV[0-9A-Za-z]{10}$/.test(bvid || '')) throw Error('无效的评论定位参数');

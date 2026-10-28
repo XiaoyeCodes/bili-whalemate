@@ -31,6 +31,12 @@ class GalleryTest(unittest.TestCase):
         with patch("bili_gallery.random.random", return_value=0.1):
             self.assertEqual(len(self.gallery.offer(0.2)), 2)
 
+    def test_intermediate_rates_gate_the_actual_candidate_offer(self):
+        for rate, expected in ((0, 0), (0.2, 200), (0.5, 500), (1, 1000)):
+            with self.subTest(rate=rate), patch('bili_gallery.random.random', side_effect=(i / 1000 for i in range(1000))):
+                count = sum(bool(self.gallery.offer(rate)) for _ in range(1000))
+                self.assertEqual(count, expected)
+
     def test_webp_is_converted_to_a_stable_png_without_changing_gallery(self):
         result = self.gallery.prepare("开心.webp")
         self.assertEqual(result["file"], "开心.webp")
@@ -64,7 +70,7 @@ class GalleryTest(unittest.TestCase):
         self.rows[0]["keywords"] += " 自动回复禁用"
         self.gallery.ranker = Mock(return_value=self.rows)
         offered = self.gallery.offer(1, query="打招呼")
-        self.gallery.ranker.assert_called_once_with("打招呼")
+        self.gallery.ranker.assert_called_once_with("打招呼", True)
         self.assertEqual([row["file"] for row in offered], ["hello.png"])
 
 

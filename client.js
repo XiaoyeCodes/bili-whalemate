@@ -47,7 +47,7 @@ window.__ModuleLoader__.load({
         },
         aliyun: {
           label: "阿里云百炼（含 embedding）",
-          llm_base: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+          llm_base: "https://ws-bzw864scfibokwzf.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
           llm_model: "qwen-plus",
           embed_model: "qwen3.7-text-embedding-flash",
           hint: "阿里云一套 key 同时给对话模型和向量模型用。",
@@ -166,6 +166,66 @@ window.__ModuleLoader__.load({
             props.optional ? h("span", { style: { ...S.muted, marginLeft: 6 } }, "（可选）") : null),
           props.children,
           props.hint ? h("div", { style: S.hint }, props.hint) : null,
+        );
+      }
+
+      /** 概率按 1% 调整；拖动结束、键盘松开或失焦时提交，0 保留为独立关闭状态。 */
+      function ProbabilitySlider({ id, label, value, disabled, offLabel, onChange, onCommit }) {
+        const lastEnabled = React.useRef(0.2);
+        const dirty = React.useRef(false);
+        React.useEffect(() => {
+          if (value > 0) lastEnabled.current = value;
+        }, [value]);
+        const enabled = value !== null && value > 0;
+        const percent = Math.round((enabled ? value : lastEnabled.current) * 100);
+        const commit = (ev) => {
+          if (!dirty.current) return;
+          dirty.current = false;
+          void onCommit(Number(ev.currentTarget.value) / 100);
+        };
+        return h("div", { style: { ...S.field, gap: 8, minWidth: 0 } },
+          h("div", { style: { ...S.row, flexWrap: "wrap" } },
+            h("label", { htmlFor: id, style: { ...S.label, marginRight: "auto" } }, label),
+            h("output", { htmlFor: id, style: { ...S.label, color: "var(--dsw-alias-link)", fontVariantNumeric: "tabular-nums" } },
+              enabled ? percent + "%" : offLabel),
+            h("button", {
+              type: "button", disabled, "aria-label": label + (enabled ? "：关闭" : "：开启"),
+              style: { ...S.btn(false), padding: "4px 10px", fontSize: 12 },
+              onClick: () => {
+                dirty.current = false;
+                const next = enabled ? 0 : lastEnabled.current;
+                onChange(next);
+                void onCommit(next);
+              },
+            }, enabled ? offLabel : "开启"),
+          ),
+          h("input", {
+            id, type: "range", min: 1, max: 100, step: 1, value: percent,
+            disabled: disabled || !enabled, "aria-valuetext": enabled ? percent + "%" : offLabel,
+            style: { width: "100%", minWidth: 0, height: 28, margin: 0, cursor: disabled || !enabled ? "not-allowed" : "pointer" },
+            onChange: (ev) => {
+              dirty.current = true;
+              onChange(Number(ev.currentTarget.value) / 100);
+            },
+            onPointerDown: (ev) => ev.currentTarget.setPointerCapture(ev.pointerId),
+            onPointerUp: commit, onPointerCancel: commit, onKeyUp: commit, onBlur: commit,
+          }),
+          h("div", { style: { ...S.row, justifyContent: "space-between", ...S.muted } },
+            h("span", null, "1%"), h("span", null, "100%")),
+        );
+      }
+
+      function MemeChatNode({ node }) {
+        const [imageFailed, setImageFailed] = React.useState(false);
+        const data = node.data.data;
+        if (data.status === "failed" || imageFailed) {
+          return h("div", { style: S.notice("error") }, imageFailed ? "表情包加载失败，请检查记忆服务连接" : data.reason);
+        }
+        const url = serviceUrl() + "/memes/file/" + encodeURIComponent(data.file);
+        return h("div", { style: { padding: "4px 0", maxWidth: "100%" } },
+          h("a", { href: url, target: "_blank", rel: "noreferrer", "aria-label": "查看表情包" },
+            h("img", { src: url, alt: "表情包", loading: "lazy", onError: () => setImageFailed(true),
+              style: { display: "block", width: 180, height: 180, maxWidth: "100%", objectFit: "contain", borderRadius: 8 } })),
         );
       }
 
@@ -631,26 +691,18 @@ window.__ModuleLoader__.load({
         const [view, setView] = React.useState("list");
         const [newPack, setNewPack] = React.useState(null);
         const [editPack, setEditPack] = React.useState(null);
-        // 发表情包的频率：0 / 0.2 / 0.5 / 1.0。会和 find_meme 的描述一起告诉她
+        // 概率以 0–1 保存，0 表示关闭。
         const [memeRate, setMemeRate] = React.useState(null);
         // 文字颜 / emoji：总开关默认关闭，关着就完全不干预
         const [textStyleEnabled, setTextStyleEnabled] = React.useState(false);
         const [kaomojiRate, setKaomojiRate] = React.useState(0.2);
         const [emojiRate, setEmojiRate] = React.useState(0.2);
-
-        const STYLE_OPTIONS = [
-          { v: 0, label: "不用", hint: "一个都不加" },
-          { v: 0.2, label: "20%", hint: "大约每 5 句一个" },
-          { v: 0.5, label: "50%", hint: "大约每 2 句一个" },
-          { v: 1, label: "100%", hint: "每句都带" },
-        ];
-
-        const RATE_OPTIONS = [
-          { v: 0, label: "不发", hint: "只说话，不发图" },
-          { v: 0.2, label: "20%", hint: "大约每 5 句一张" },
-          { v: 0.5, label: "50%", hint: "大约每 2 句一张" },
-          { v: 1, label: "100%", hint: "每句都配一张" },
-        ];
+        const [deliveryStatus, setDeliveryStatus] = React.useState({});
+        const saveQueue = React.useRef(Promise.resolve());
+        const loadDeliveryStatus = async () => {
+          try { setDeliveryStatus(await call("/memes/delivery-status")); }
+          catch (err) { setDeliveryStatus({ service: { status: "failed", reason: "配图状态读取失败：" + err.message } }); }
+        };
 
         const loadRate = async () => {
           try {
@@ -662,28 +714,26 @@ window.__ModuleLoader__.load({
             setKaomojiRate(Number.isFinite(k) ? k : 0.2);
             const e = Number(r && r.emojiRate);
             setEmojiRate(Number.isFinite(e) ? e : 0.2);
-          } catch {
-            setMemeRate(0.2);
+          } catch (err) {
+            setMsg("读取概率失败：" + (err && err.message ? err.message : String(err)) + "，请刷新重试");
           }
         };
 
-        const postProactive = async (body, note) => {
-          try {
-            await call("/proactive", { method: "POST", body: JSON.stringify(body) });
-            if (note) setMsg(note);
-          } catch (err) {
-            setMsg("保存失败：" + (err && err.message ? err.message : String(err)));
-          }
+        const postProactive = (body, note) => {
+          const save = async () => {
+            try {
+              await call("/proactive", { method: "POST", body: JSON.stringify(body) });
+              if (note) setMsg(note);
+            } catch (err) {
+              setMsg("保存失败：" + (err && err.message ? err.message : String(err)));
+            }
+          };
+          saveQueue.current = saveQueue.current.then(save);
+          return saveQueue.current;
         };
 
         const saveRate = async (v) => {
-          setMemeRate(v);
-          try {
-            await call("/proactive", { method: "POST", body: JSON.stringify({ memeRate: v }) });
-            setMsg("表情包频率已设为：" + (v <= 0 ? "不发" : Math.round(v * 100) + "%"));
-          } catch (err) {
-            setMsg("保存失败：" + (err && err.message ? err.message : String(err)));
-          }
+          await postProactive({ memeRate: v }, "表情包概率已设为：" + (v <= 0 ? "不发" : Math.round(v * 100) + "%"));
         };
 
         const startEdit = (m) => {
@@ -724,6 +774,7 @@ window.__ModuleLoader__.load({
         React.useEffect(() => {
           void loadPacks();
           void loadRate();
+          void loadDeliveryStatus();
         }, []);
 
         React.useEffect(() => {
@@ -786,47 +837,40 @@ window.__ModuleLoader__.load({
         if (view === "list") {
           return h("div", { className: "dsh-remembers-settings", style: S.wrap },
             h("div", { style: S.desc },
-              "QQ 与 B 站共用这些图片。B 站顶层评论可附图，主人私信可发图片；楼中楼因平台限制仅回复文字，不放图片链接。不会定时轮播。",
+              "网页、QQ 与 B 站共用这些图片。B 站顶层评论可附图，主人私信可发图片；楼中楼因平台限制仅回复文字，不放图片链接。不会定时轮播。",
             ),
-            // ---- 发表情包的频率 ----
             h("div", { style: { ...S.card, marginBottom: 14 } },
-              h("div", { style: S.label }, "发表情包的频率"),
-              h("div", { style: { ...S.muted, fontSize: 12, marginBottom: 10 } },
-                "QQ 按频率提示择图；B 站按同一比例抽取配图机会，再由模型选图。20% 不保证每五句恰好一次；没有合适图片时只发文字。"),
-              h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8 } },
-                ...RATE_OPTIONS.map((o) => {
-                  const on = memeRate !== null && Math.abs(Number(memeRate) - o.v) < 0.001;
-                  return h("div", {
-                    key: "meme-rate-" + o.v,
-                    onClick: () => void saveRate(o.v),
-                    style: {
-                      padding: "10px 8px", borderRadius: 8, cursor: "pointer", textAlign: "center",
-                      border: on ? "1px solid color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary))" : "1px solid var(--dsw-alias-border-l4)",
-                      background: on ? "color-mix(in srgb, color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary)) 10%, var(--dsw-alias-bg-layer-1))" : "var(--dsw-alias-bg-layer-1)",
-                      transition: "border-color .15s, background .15s",
-                    },
-                  },
-                    h("div", { style: { fontSize: 13, fontWeight: 500, color: on ? "color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary))" : "var(--dsw-alias-label-primary)" } }, o.label),
-                    h("div", { style: { fontSize: 11, color: "var(--dsw-alias-label-secondary)", marginTop: 2 } }, o.hint),
-                  );
-                }),
-              ),
+              h(ProbabilitySlider, {
+                id: "meme-probability", label: "发表情包的概率", value: memeRate,
+                disabled: memeRate === null, offLabel: "不发", onChange: setMemeRate, onCommit: saveRate,
+              }),
+              h("div", { style: S.muted }, "拖动滑动条调整概率（1%–100%），松开后自动保存"),
+              h("div", { style: { ...S.muted, fontSize: 12 } },
+                "网页、QQ 与 B 站共用此概率。100% 时每条普通回复都优先配图，也可选微笑、点头、问号等通用表情。严肃内容、禁用图片或平台发送限制仍可能使本轮只发文字。"),
+              Object.keys(deliveryStatus).length ? h("div", { style: { ...S.field, borderTop: "1px solid var(--dsw-alias-border-l4)", paddingTop: 10 } },
+                h("div", { style: S.label }, "最近配图结果"),
+                Object.entries(deliveryStatus).map(([channel, outcome]) => h("div", { key: channel, style: { ...S.muted, overflowWrap: "anywhere" } },
+                  ({ qq: "QQ", web: "网页", bili: "B 站", service: "服务" }[channel] || channel) + "：" + outcome.reason)),
+              ) : null,
             ),
             // ---- 文字颜 / emoji（总开关 + 两个频率）----
             h("div", { style: { ...S.card, marginBottom: 14 } },
               h("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 } },
-                h("div", { style: S.label }, "文字颜 / emoji"),
-                h("div", {
+                h("div", { style: S.label }, "文字颜 / 表情符号"),
+                h("button", {
+                  type: "button", role: "switch", "aria-checked": textStyleEnabled,
+                  "aria-label": "文字颜 / 表情符号", disabled: memeRate === null,
                   onClick: () => {
                     const next = !textStyleEnabled;
                     setTextStyleEnabled(next);
                     void postProactive(
                       { textStyleEnabled: next },
-                      "文字颜 / emoji 已" + (next ? "开启" : "关闭"),
+                      "文字颜 / 表情符号已" + (next ? "开启" : "关闭"),
                     );
                   },
                   style: {
                     display: "flex", alignItems: "center", gap: 6, cursor: "pointer",
+                    fontFamily: "inherit", flexShrink: 0,
                     padding: "4px 10px", borderRadius: 999,
                     border: textStyleEnabled ? "1px solid color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary))" : "1px solid var(--dsw-alias-border-l4)",
                     background: textStyleEnabled ? "color-mix(in srgb, color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary)) 10%, var(--dsw-alias-bg-layer-1))" : "var(--dsw-alias-bg-layer-1)",
@@ -845,58 +889,24 @@ window.__ModuleLoader__.load({
                 ),
               ),
               h("div", { style: { ...S.muted, fontSize: 12, marginBottom: 12 } },
-                "默认关闭。关着的时候不给她任何指令，她想怎么说话就怎么说话。"),
+                "默认关闭，关闭时沿用人物卡。QQ、B 站开启后，每条完整回复独立抽签添加颜文字和 emoji；代码、引用和链接保留原文。"),
               h("div", {
                 style: {
                   opacity: textStyleEnabled ? 1 : 0.4,
-                  pointerEvents: textStyleEnabled ? "auto" : "none",
+                  display: "flex", flexDirection: "column", gap: 16,
                   transition: "opacity .15s",
                 },
               },
-                h("div", { style: { fontSize: 12, fontWeight: 500, marginBottom: 6 } }, "文字颜 (￣▽￣)"),
-                h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, marginBottom: 14 } },
-                  ...STYLE_OPTIONS.map((o) => {
-                    const on = Math.abs(Number(kaomojiRate) - o.v) < 0.001;
-                    return h("div", {
-                      key: "kao-" + o.v,
-                      onClick: () => {
-                        setKaomojiRate(o.v);
-                        void postProactive({ kaomojiRate: o.v }, "文字颜：" + o.label);
-                      },
-                      style: {
-                        padding: "10px 8px", borderRadius: 8, cursor: "pointer", textAlign: "center",
-                        border: on ? "1px solid color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary))" : "1px solid var(--dsw-alias-border-l4)",
-                        background: on ? "color-mix(in srgb, color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary)) 10%, var(--dsw-alias-bg-layer-1))" : "var(--dsw-alias-bg-layer-1)",
-                        transition: "border-color .15s, background .15s",
-                      },
-                    },
-                      h("div", { style: { fontSize: 13, fontWeight: 500, color: on ? "color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary))" : "var(--dsw-alias-label-primary)" } }, o.label),
-                      h("div", { style: { fontSize: 11, color: "var(--dsw-alias-label-secondary)", marginTop: 2 } }, o.hint),
-                    );
-                  }),
-                ),
-                h("div", { style: { fontSize: 12, fontWeight: 500, marginBottom: 6 } }, "emoji 😊"),
-                h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8 } },
-                  ...STYLE_OPTIONS.map((o) => {
-                    const on = Math.abs(Number(emojiRate) - o.v) < 0.001;
-                    return h("div", {
-                      key: "emo-" + o.v,
-                      onClick: () => {
-                        setEmojiRate(o.v);
-                        void postProactive({ emojiRate: o.v }, "emoji：" + o.label);
-                      },
-                      style: {
-                        padding: "10px 8px", borderRadius: 8, cursor: "pointer", textAlign: "center",
-                        border: on ? "1px solid color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary))" : "1px solid var(--dsw-alias-border-l4)",
-                        background: on ? "color-mix(in srgb, color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary)) 10%, var(--dsw-alias-bg-layer-1))" : "var(--dsw-alias-bg-layer-1)",
-                        transition: "border-color .15s, background .15s",
-                      },
-                    },
-                      h("div", { style: { fontSize: 13, fontWeight: 500, color: on ? "color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary))" : "var(--dsw-alias-label-primary)" } }, o.label),
-                      h("div", { style: { fontSize: 11, color: "var(--dsw-alias-label-secondary)", marginTop: 2 } }, o.hint),
-                    );
-                  }),
-                ),
+                h(ProbabilitySlider, {
+                  id: "kaomoji-probability", label: "文字颜 (￣▽￣)", value: kaomojiRate,
+                  disabled: !textStyleEnabled || memeRate === null, offLabel: "不用", onChange: setKaomojiRate,
+                  onCommit: (v) => postProactive({ kaomojiRate: v }, "文字颜：" + (v <= 0 ? "不用" : Math.round(v * 100) + "%")),
+                }),
+                h(ProbabilitySlider, {
+                  id: "emoji-probability", label: "表情符号 😊", value: emojiRate,
+                  disabled: !textStyleEnabled || memeRate === null, offLabel: "不用", onChange: setEmojiRate,
+                  onCommit: (v) => postProactive({ emojiRate: v }, "表情符号：" + (v <= 0 ? "不用" : Math.round(v * 100) + "%")),
+                }),
               ),
             ),
             h("div", { style: { display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" } },
@@ -906,7 +916,7 @@ window.__ModuleLoader__.load({
               }, "新建图库包"),
               h("button", {
                 style: { ...S.btn(false), padding: "6px 14px", fontSize: 13 },
-                onClick: () => void loadPacks(),
+                onClick: () => { void loadPacks(); void loadRate(); void loadDeliveryStatus(); },
               }, "刷新"),
             ),
             msg ? h("div", { style: S.muted }, msg) : null,
@@ -1682,7 +1692,7 @@ window.__ModuleLoader__.load({
       // ---------------------------------------------------------------------
       // B 站：账号状态 + 开关（她自己的号，嘴走 QQ 那套）
       // ---------------------------------------------------------------------
-      function BiliAutomationPanel({ value, status, onChange, onRun, running }) {
+      function BiliAutomationPanel({ value, status, writeBudget, writeUsage, onWriteBudgetChange, onChange, onRun, running }) {
         if (!value) return null;
         const change = (path, next) => {
           const copy = JSON.parse(JSON.stringify(value));
@@ -1698,30 +1708,93 @@ window.__ModuleLoader__.load({
           h("span", null, h("span", { style: S.label }, text), hint ? h("div", { style: S.muted }, hint) : null));
         const number = (label, path, min, max) => h("label", { style: { display: "flex", alignItems: "center", gap: 6 } },
           h("span", { style: S.muted }, label), h("input", { type: "number", min, max, step: 1,
-            "aria-label": label, style: { ...S.input, width: 86 }, value: path.reduce((o, k) => o[k], value),
+            required: true, "aria-label": label, title: `请输入 ${min}～${max} 的整数`,
+            style: { ...S.input, width: 86 }, value: path.reduce((o, k) => o[k], value),
             onChange: ev => change(path, ev.target.value === "" ? "" : Number(ev.target.value)) }));
-        const names = { browse: "浏览视频", recommend: "推荐给主人", comment: "独立评论", interact: "评论互动", dmReply: "主人私信回复", strangerReply: "陌生人 @／回复互动", ownerReply: "主人评论区 @／回复" };
+        const diagnostic = (text, unknown = false) => {
+          const long = text.length > 240 || /[\r\n]|file:\/\/|node:internal/.test(text);
+          return h("div", null,
+            h("div", { style: S.muted }, long ? (unknown ? "发送结果尚未确认，已暂停重发；请先检查 B 站会话" : "执行未完成，请展开详情查看原因") : text),
+            long ? h("details", null, h("summary", { style: S.muted }, "技术详情"),
+              h("pre", { style: { ...S.muted, whiteSpace: "pre-wrap", overflowWrap: "anywhere" } }, text)) : null);
+        };
+        const names = { browse: "浏览视频", recommend: "推荐给主人", comment: "独立评论", interact: "评论互动", dmReply: "主人私信回复", strangerReply: "陌生人 @／回复互动", ownerReply: "主人评论区 @／回复",
+          ...(value.lifePosts ? { dynamic: "鱼鱼碎碎念动态" } : {}) };
         const states = { success: "成功", running: "执行中", failed: "失败", unknown: "待核查" };
+        const budgetTime = timestamp => new Date(timestamp * 1000).toLocaleTimeString("zh-CN", {
+          timeZone: "Asia/Shanghai", hourCycle: "h23", hour: "2-digit", minute: "2-digit",
+        });
         return h("div", { style: S.card, "data-bili-automation": "" },
           h("div", { style: S.label }, "自动浏览与互动"),
-          h("div", { style: S.muted }, "每日目标随机生成并持久保存。图库与概率共用「表情包」设置；顶层评论可附图，楼中楼仅文字，私信在正文后发图。未确认发送时显示原因。"),
-          check("启用 B 站自动活动", ["enabled"], "与当前人格设定共用人设，按北京时间运行"),
+          h("div", { style: S.muted }, "每日目标随机生成并持久保存。每轮推荐、独立评论和互动分别抽签，可执行多项；全部未命中时补选一项符合条件的活动。评分、额度与平台限速仍生效。图库与概率共用「表情包」设置；顶层评论可附图，楼中楼仅文字，私信在正文后发图。未确认发送时显示原因。"),
+          h("div", { style: { borderTop: "1px solid var(--dsw-alias-border-l4)", paddingTop: 12 } },
+            h("div", { style: S.label }, "写操作总上限"),
+            h("div", { style: S.muted }, "评论、私信、图片上传等共用这两个上限，达到任一上限后暂停写入。额度恢复后，未发送的私信会重新检查并重试。修改后点击页面顶部“保存”生效。"),
+            h("div", { style: { ...S.row, flexWrap: "wrap", marginTop: 8 } },
+              ...[["writeDaily", "每天最多写操作"], ["writeHourly", "每小时最多写操作"]].map(([key, label]) =>
+                h("label", { key, style: { display: "flex", alignItems: "center", gap: 6 } },
+                  h("span", { style: S.muted }, label),
+                  h("input", { type: "number", min: 1, max: 100000, step: 1, required: true, "aria-label": label,
+                    title: "请输入 1～100000 的整数", style: { ...S.input, width: 100 }, value: writeBudget[key],
+                    onChange: ev => onWriteBudgetChange(key, ev.target.value) })))),
+            h("div", { style: { ...S.muted, marginTop: 8 }, role: "status", "data-write-usage": "" },
+              writeUsage === null ? "正在读取写操作用量…" : writeUsage.error ? "写操作用量暂时无法读取，请检查记忆服务和 B 站登录状态" : h(React.Fragment, null,
+                h("div", null, `今日已用 ${writeUsage.daily} / ${writeUsage.dailyLimit} 次，剩余 ${writeUsage.dailyRemaining} 次（北京时间零点重置）`),
+                h("div", null, `本小时 ${budgetTime(writeUsage.hourStartedAt)}–${budgetTime(writeUsage.hourResetsAt)}：已用 ${writeUsage.hourly} / ${writeUsage.hourlyLimit} 次，剩余 ${writeUsage.hourlyRemaining} 次`),
+                h("div", null, `小时额度将在 ${budgetTime(writeUsage.hourResetsAt)} 自动重置（北京时间，每 10 秒刷新）`)))),
+          check("自动执行 B 站任务", ["enabled"], "需同时开启上方总开关。她会保持“人格设定”中的性格和语气，按下方勾选的项目、时段和次数自动活动（北京时间）。修改后点击页面顶部“保存”生效。"),
           ...Object.entries(names).map(([kind, label]) => {
             const counts = (status && status.counts && status.counts[kind]) || {};
             const target = status && status.targets ? status.targets[kind] : "—";
             return h("div", { key: kind, style: { borderTop: "1px solid var(--dsw-alias-border-l4)", paddingTop: 12 } },
               check(label, ["features", kind], ({ browse: "按已保存偏好选视频并读取内容", recommend: "结合视频的有趣之处写推荐，在评论区真正 @ 主人",
-                comment: "独立表达对视频的感想，不自动 @ 主人", interact: "针对已读取的具体评论自然回复，同一视频不重复公开发言",
+                comment: "独立表达对视频的感想，不自动 @ 主人", interact: "针对已读取的具体评论自然回复，同一视频按动作类型分别去重",
                 dmReply: "只读取和回复主人的新私信，成功发送后才确认消息游标",
                 strangerReply: "响应陌生人在视频评论区的新 @ 和回复；首次开启只建立收件箱基线，不回复旧消息",
-                ownerReply: "回复主人在视频评论区的新 @ 和回复，公开发言不附带私聊画像；楼中楼仅发送文字" })[kind]),
+                ownerReply: "回复主人在视频评论区的新 @ 和回复，公开发言不附带私聊画像；楼中楼仅发送文字",
+                dynamic: "按上海日期、实际天气和节假日，发鱼生思考、日常感慨与想吃饭的碎碎念；失败也占当日尝试数" })[kind]),
               h("div", { style: { ...S.row, flexWrap: "wrap", marginTop: 8 } },
                 kind === "ownerReply" ? number("主人评论每天最多回复", ["ownerCommentDailyMax"], 0, 500) : kind === "strangerReply" ? number("陌生人每天最多 AI 回复", ["strangerDailyMax"], 0, 500) : kind === "dmReply" ? number("私信每天最多", ["dmDailyMax"], 0, 500) : h(React.Fragment, null,
-                  number(label + "每天最少", ["daily", kind, "min"], 0, 500),
-                  number(label + "每天最多", ["daily", kind, "max"], 0, 500)),
+                  number(label + "每天最少", ["daily", kind, "min"], 0, kind === "dynamic" ? 20 : 500),
+                  number(label + "每天最多", ["daily", kind, "max"], 0, kind === "dynamic" ? 20 : 500)),
+                value.actionProbability && ["recommend", "comment", "interact"].includes(kind)
+                  ? number(label + "每轮抽签概率（%）", ["actionProbability", kind], 1, 100) : null,
                 h("span", { style: S.muted }, `今日${["dmReply", "strangerReply", "ownerReply"].includes(kind) ? "上限" : "目标"} ${target} · 成功 ${counts.success || 0} · 执行中 ${counts.running || 0} · 失败 ${counts.failed || 0} · 待核查 ${counts.unknown || 0}`)),
               kind === "strangerReply" ? h("div", { style: S.muted }, "AI 生成失败也占当日次数。超限后直接回复「token快要用完啦，我的主人不让我回答啦」，不调用模型；同一人每天最多收到一次固定提示。固定提示成功 " + ((status && status.counts && status.counts.strangerNotice && status.counts.strangerNotice.success) || 0) + " 条。") : null);
           }),
+          value.lifePosts ? h("details", { "data-life-post-settings": "" },
+            h("summary", { style: { ...S.label, cursor: "pointer" } }, "碎碎念主题、时段与偏好"),
+            h("div", { style: { display: "flex", flexDirection: "column", gap: 12, marginTop: 12 } },
+              h("div", { style: S.muted }, "使用上海当天的天气与中国法定节假日资料，区分放假和调休上班；天气取不到时换其他主题，不编造实况。发表时间随机安排，刷新与重启不会重新抽取。"),
+              check("动态允许带图库表情包", ["lifePosts", "allowMemes"], "复用 QQ 与 B 站现有图库和表情包概率；图片不符合当前语境时只发文字"),
+              h("div", { style: { ...S.row, flexWrap: "wrap" } },
+                number("碎碎念开始时刻", ["lifePosts", "startHour"], 0, 23), number("碎碎念结束时刻", ["lifePosts", "endHour"], 1, 24),
+                number("碎碎念最短间隔（分钟）", ["lifePosts", "minGapMinutes"], 10, 1440), number("碎碎念最多字数", ["lifePosts", "maxChars"], 40, 500)),
+              h("div", { style: { display: "flex", flexWrap: "wrap", gap: 14 } },
+                ...Object.entries({ fishlife: "鱼生思考", philosophy: "哲学碎想", world: "对世界的好奇", daily: "日常感慨", food: "饿了想吃饭", weather: "上海天气", holiday: "假期与调休心情" }).map(([key, label]) =>
+                  h("label", { key, style: { display: "flex", gap: 6, alignItems: "center" } },
+                    h("input", { type: "checkbox", "aria-label": "碎碎念主题：" + label, checked: value.lifePosts.themes.includes(key),
+                      onChange: ev => change(["lifePosts", "themes"], ev.target.checked ? [...value.lifePosts.themes, key] : value.lifePosts.themes.filter(t => t !== key)) }), label))),
+              value.lifePosts.themes.length ? null : h("div", { style: S.notice("error") }, "至少选择一个碎碎念主题后再保存"),
+              h("label", null, h("span", { style: S.label }, "碎碎念写作提示词"),
+                h("textarea", { "aria-label": "碎碎念写作提示词", style: { ...S.input, minHeight: 80, resize: "vertical" }, maxLength: 4000,
+                  placeholder: "例如：喜欢冷幽默，偶尔想到宇宙；别每条都喊主人", value: value.lifePosts.prompt,
+                  onChange: ev => change(["lifePosts", "prompt"], ev.target.value) })),
+              h("div", { style: S.muted }, "动态只使用公开人设，不引用私人聊天。预览会调用模型，但不发布，也不消耗今日发表次数。请先保存设置再执行。"),
+              status && status.dynamicSchedule ? h("div", { style: S.muted },
+                "已安排时刻：" + (status.dynamicSchedule.slots.filter(Boolean).map(t => new Date(t * 1000).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })).join("、") || "剩余时段不足")
+                  + (status.dynamicSchedule.note ? " · " + status.dynamicSchedule.note : "")) : null,
+              status && status.dynamicError ? h("div", { style: S.notice("error") }, "动态：" + status.dynamicError) : null,
+              h("div", { style: { ...S.row, flexWrap: "wrap" } },
+                h("button", { style: S.btn(false), disabled: running || !!(status && status.busy), onClick: () => onRun(true, "dynamic") }, "预览碎碎念（不发布）"),
+                h("button", { style: S.btn(false), disabled: running || !!(status && status.busy) || !value.enabled || !value.features.dynamic, onClick: () => onRun(false, "dynamic") }, "按已保存设置发一条")),
+              status && status.lastDynamicPreview ? h("div", { style: { ...S.desc, whiteSpace: "pre-wrap" } },
+                "最近预览（未发布）：\n" + status.lastDynamicPreview.text,
+                status.lastDynamicPreview.context ? h("div", { style: S.muted },
+                  "上海 · " + status.lastDynamicPreview.context.date + " · " + status.lastDynamicPreview.context.weekday
+                  + " · " + (status.lastDynamicPreview.context.calendar.name || "假期资料未更新")
+                  + " · " + (status.lastDynamicPreview.context.weather.available ? status.lastDynamicPreview.context.weather.description + " " + status.lastDynamicPreview.context.weather.temperatureC + "°C" : "天气暂不可用")) : null) : null,
+            )) : null,
           h("details", null, h("summary", { style: { ...S.label, cursor: "pointer" } }, "时间、私信与推荐设置"),
             h("div", { style: { display: "flex", flexDirection: "column", gap: 12, marginTop: 12 } },
               h("div", { style: { ...S.row, flexWrap: "wrap" } }, number("开始时刻", ["startHour"], 0, 23), number("结束时刻", ["endHour"], 1, 24)),
@@ -1748,13 +1821,15 @@ window.__ModuleLoader__.load({
             ...status.events.slice(0, 12).map(event => h("div", { key: event.id, style: { padding: "8px 0", borderBottom: "1px solid var(--dsw-alias-border-l4)" } },
               h("span", { style: S.desc }, `${names[event.kind] || "超限固定提示"} · ${states[event.status]} `),
               event.result && event.result.url ? h("a", { href: event.result.url, target: "_blank", rel: "noopener noreferrer" }, event.result.title || "查看结果") : null,
+              event.kind === "dynamic" && event.result && event.result.text ? h("div", { style: { ...S.desc, whiteSpace: "pre-wrap" } }, event.result.text) : null,
               event.result && event.result.meme_file ? h("div", { style: S.muted }, (event.result.mediaMode === "link" ? "表情原图链接：" : "配图：") + event.result.meme_file) : null,
               event.result && event.result.mediaWarning ? h("div", { style: S.notice("error") }, event.result.mediaWarning) : null,
-              event.error ? h("div", { style: S.muted }, event.error) : null))) : null,
+              event.error ? diagnostic(event.error, event.status === "unknown") : null))) : null,
         );
       }
 
       function BiliSection() {
+        const sectionRef = React.useRef(null);
         const [st, setSt] = React.useState(null);
         const [busy, setBusy] = React.useState(false);
         const [test, setTest] = React.useState(null);
@@ -1776,6 +1851,8 @@ window.__ModuleLoader__.load({
         const [automation, setAutomation] = React.useState(null);
         const [automationStatus, setAutomationStatus] = React.useState(null);
         const [automationRunning, setAutomationRunning] = React.useState(false);
+        const [writeBudget, setWriteBudget] = React.useState({ writeDaily: 30, writeHourly: 12 });
+        const [writeUsage, setWriteUsage] = React.useState(null);
 
         const load = async () => {
           setErr(null);
@@ -1787,6 +1864,7 @@ window.__ModuleLoader__.load({
             try {
               const c = await call("/bili/cfg");
               setBiliCfg(c);
+              setWriteBudget({ writeDaily: (c.risk || {}).writeDaily ?? 30, writeHourly: (c.risk || {}).writeHourly ?? 12 });
               const a = await call("/bili/automation");
               setAutomation(a.config);
               setAutomationStatus(a);
@@ -1822,24 +1900,52 @@ window.__ModuleLoader__.load({
         React.useEffect(() => {
           void load();
           let disposed = false;
+          let usagePending = false;
+          const usageController = new AbortController();
+          const refreshUsage = async () => {
+            if (usagePending || disposed) return;
+            usagePending = true;
+            try {
+              const result = await call("/bili/write-usage", { signal: usageController.signal });
+              if (!result || !["daily", "hourly", "dailyLimit", "hourlyLimit", "dailyRemaining", "hourlyRemaining", "hourStartedAt", "hourResetsAt"].every(key => Number.isFinite(result[key]))) {
+                throw new Error("写操作用量数据不完整");
+              }
+              if (!disposed) setWriteUsage(result);
+            } catch { if (!disposed) setWriteUsage({ error: true }); }
+            finally { usagePending = false; }
+          };
+          refreshUsage();
           const timer = setInterval(() => {
+            refreshUsage();
             void call("/bili/automation").then(result => { if (!disposed) setAutomationStatus(result); })
               .catch(error => { if (!disposed) setErr("读取自动活动状态失败：" + error.message); });
           }, 10000);
-          return () => { disposed = true; clearInterval(timer); };
+          return () => { disposed = true; clearInterval(timer); usageController.abort(); };
         }, []);
 
-        const runAutomation = async (dryRun) => {
+        const runAutomation = async (dryRun, kind) => {
           setAutomationRunning(true);
           setErr(null);
           try {
-            await call("/bili/automation/run", { method: "POST", body: JSON.stringify({ dry_run: dryRun }) });
+            await call("/bili/automation/run", { method: "POST", body: JSON.stringify({ dry_run: dryRun, ...(kind ? { kind } : {}) }) });
             setAutomationStatus(await call("/bili/automation"));
           } catch (error) { setErr(error.message); }
           finally { setAutomationRunning(false); }
         };
 
         const saveAll = async () => {
+          const invalid = sectionRef.current && sectionRef.current.querySelector("input:invalid");
+          if (invalid) {
+            for (let parent = invalid.parentElement; parent; parent = parent.parentElement) {
+              if (parent.tagName === "DETAILS") parent.open = true;
+            }
+            invalid.setAttribute("aria-invalid", "true");
+            invalid.addEventListener("input", () => invalid.removeAttribute("aria-invalid"), { once: true });
+            invalid.focus();
+            setSavedAt(null);
+            setErr((invalid.getAttribute("aria-label") || "数值设置") + "：" + (invalid.title || "请填写有效数值"));
+            return;
+          }
           const f = biliForm;
               setBusy(true);
               setErr(null);
@@ -1855,6 +1961,8 @@ window.__ModuleLoader__.load({
                   { path: ["persona", "ownerTitle"], value: String(f.ownerTitle || "") },
                   { path: ["persona", "selfClaim"], value: String(f.selfClaim || "") },
                   { path: ["owner"], value: { mid: ownerMid.trim(), name: ownerName.trim() } },
+                  { path: ["risk", "writeDaily"], value: Number(writeBudget.writeDaily) },
+                  { path: ["risk", "writeHourly"], value: Number(writeBudget.writeHourly) },
                   ...(automation ? [{ path: ["automation"], value: { ...automation, managed: true } }] : []),
                 ];
                 await call("/bili/cfg", { method: "POST", body: JSON.stringify({ updates }) });
@@ -2041,7 +2149,7 @@ window.__ModuleLoader__.load({
             err ? h("div", { style: S.notice("error") }, "读取失败：" + err) : h("div", { style: S.muted }, "读取中…"));
         }
 
-        return h("fieldset", { className: "dsh-remembers-settings", disabled: busy, style: { ...S.wrap, minWidth: 0, border: 0, margin: 0 } },
+        return h("fieldset", { ref: sectionRef, className: "dsh-remembers-settings", disabled: busy, style: { ...S.wrap, minWidth: 0, border: 0, margin: 0 } },
           h("div", { style: { ...S.footer, position: "sticky", top: 0, zIndex: 2, background: "var(--dsw-alias-bg-layer-1)", padding: "8px 0" } },
             savedAt ? h("span", { style: S.muted }, "已保存 " + savedAt) : null,
             h("button", { style: S.btn(true), onClick: () => void saveAll(), disabled: busy }, busy ? "保存中…" : "保存")),
@@ -2091,13 +2199,14 @@ window.__ModuleLoader__.load({
           } },
             h("input", { type: "checkbox", checked: !!st.enabled, onChange: () => void toggle(), disabled: busy, style: { marginTop: 3 } }),
             h("div", { style: { display: "flex", flexDirection: "column", gap: 4 } },
-              h("span", { style: { fontSize: 13, fontWeight: 500 } }, "启用 B 站功能"),
+              h("span", { style: { fontSize: 13, fontWeight: 500 } }, "B 站功能总开关"),
               h("span", { style: { ...S.muted, fontSize: 12 } },
-                "关掉后她不会用 bili_feed / bili_watch，也不会同步 B 站活动。"),
+                "关闭后暂停 B 站自动任务；要恢复自动活动，还需开启下方的“自动执行 B 站任务”。此开关修改后立即生效。"),
             ),
           ),
 
-          h(BiliAutomationPanel, { value: automation, status: automationStatus, running: automationRunning,
+          h(BiliAutomationPanel, { value: automation, status: automationStatus, running: automationRunning, writeBudget, writeUsage,
+            onWriteBudgetChange: (key, value) => { setWriteBudget(previous => ({ ...previous, [key]: value })); setSavedAt(null); },
             onChange: value => { setAutomation(value); setSavedAt(null); }, onRun: runAutomation }),
 
           biliTools ? h("div", { style: S.card },
@@ -3359,6 +3468,77 @@ const [data, setData] = React.useState(null);
         );
       }
 
+      function PersonaCards() {
+        const [library, setLibrary] = React.useState(null);
+        const [draft, setDraft] = React.useState({ id: "", name: "", prompt: "" });
+        const [dirty, setDirty] = React.useState(false);
+        const [busy, setBusy] = React.useState(false);
+        const [notice, setNotice] = React.useState(null);
+        const load = React.useCallback(async () => {
+          try {
+            const data = await call("/persona/cards");
+            setLibrary(data);
+            const card = data.cards.find(x => x.id === data.active.qq) || data.cards[0];
+            if (card) setDraft({ id: card.id, name: card.name, prompt: card.prompt });
+          } catch (error) { setNotice({ kind: "error", text: "人物卡读取失败：" + error.message }); }
+        }, []);
+        React.useEffect(() => { void load(); }, [load]);
+        const pick = (card) => {
+          if (dirty && !window.confirm("当前人物卡有未保存的修改，确定放弃吗？")) return;
+          setDraft(card ? { id: card.id, name: card.name, prompt: card.prompt } : { id: "", name: "", prompt: "" });
+          setDirty(false); setNotice(null);
+        };
+        const mutate = async (body) => {
+          setBusy(true); setNotice(null);
+          try {
+            const data = await call("/persona/cards", { method: "POST", body: JSON.stringify(body) });
+            setLibrary(data);
+            if (body.action === "create" || body.action === "update") {
+              const card = data.cards.find(x => x.id === data.changed_id);
+              setDraft({ id: card.id, name: card.name, prompt: card.prompt });
+              setDirty(false);
+            } else if (body.action === "delete") {
+              const card = data.cards.find(x => x.id === data.active.qq) || data.cards[0];
+              setDraft({ id: card.id, name: card.name, prompt: card.prompt });
+              setDirty(false);
+            }
+            setNotice({ kind: "ok", text: body.action === "select" ? "渠道已切换，QQ 稍后生效。" : "已保存。" });
+          } catch (error) { setNotice({ kind: "error", text: error.message || "保存失败" }); }
+          finally { setBusy(false); }
+        };
+        if (!library) return h("div", { style: S.card }, notice ? h("div", { style: S.notice("error"), role: "alert" }, notice.text) : "正在读取人物卡…",
+          notice ? h("button", { type: "button", style: S.btn(false), onClick: () => void load() }, "重新加载") : null);
+        const edit = (key, value) => { setDraft(old => ({ ...old, [key]: value })); setDirty(true); };
+        return h("section", { style: S.card, "data-persona-cards": "" },
+          h("div", { style: { display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" } },
+            h("div", null, h("div", { style: { fontSize: 17, fontWeight: 650 } }, "人物卡"),
+              h("div", { style: S.desc }, "一张卡一段完整提示词，两个渠道可以分别选择。")),
+            h("button", { type: "button", style: S.btn(false), disabled: busy, onClick: () => pick(null) }, "新建人物卡")),
+          h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 } },
+            ...[["qq", "QQ 使用"], ["bili", "B 站使用"]].map(([channel, label]) => h("label", { key: channel, style: S.field },
+              h("span", { style: S.label }, label),
+              h("select", { style: S.select, value: library.active[channel], disabled: busy, "aria-label": label,
+                onChange: event => void mutate({ action: "select", channel, id: event.target.value }) },
+                ...library.cards.map(card => h("option", { key: card.id, value: card.id }, card.name)))))),
+          h("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 } },
+            ...library.cards.map(card => h("button", { key: card.id, type: "button", disabled: busy, onClick: () => pick(card),
+              "aria-pressed": draft.id === card.id, style: { ...S.btn(draft.id === card.id), maxWidth: "100%", overflowWrap: "anywhere" } }, card.name))),
+          h("label", { style: S.field }, h("span", { style: S.label }, "人物卡名称"),
+            h("input", { style: S.input, value: draft.name, maxLength: 80, placeholder: "例如：温柔的鲸鱼娘", onChange: event => edit("name", event.target.value) })),
+          h("label", { style: S.field }, h("span", { style: S.label }, "系统提示词"),
+            h("textarea", { style: { ...S.input, minHeight: 300, resize: "vertical", lineHeight: 1.7 }, value: draft.prompt,
+              maxLength: 30000, placeholder: "在这里写完整的人物设定和说话方式…", onChange: event => edit("prompt", event.target.value) }),
+            h("span", { style: S.muted }, `${draft.prompt.length} / 30000 字符`)),
+          notice ? h("div", { style: S.notice(notice.kind), role: notice.kind === "error" ? "alert" : "status" }, notice.text) : null,
+          h("div", { style: { display: "flex", flexWrap: "wrap", gap: 8 } },
+            h("button", { type: "button", style: S.btn(true), disabled: busy || !dirty || !draft.name.trim() || !draft.prompt.trim(),
+              onClick: () => void mutate({ action: draft.id ? "update" : "create", id: draft.id, name: draft.name, prompt: draft.prompt }) }, busy ? "保存中…" : "保存人物卡"),
+            draft.id ? h("button", { type: "button", style: S.btn(false), disabled: busy || Object.values(library.active).includes(draft.id),
+              title: Object.values(library.active).includes(draft.id) ? "先切换使用此卡的渠道" : "删除人物卡",
+              onClick: () => { if (window.confirm("确定删除这张人物卡吗？")) void mutate({ action: "delete", id: draft.id }); } }, "删除人物卡") : null),
+          h("div", { style: S.desc }, "正在使用的卡不能删除。QQ 在配置刷新后更新，B 站下次生成时更新。文字表情和图库图片仍可在表情包设置中单独调整。"));
+      }
+
       function PersonaSection() {
         const [userProfile, setUserProfile] = React.useState("");
         const [profileMsg, setProfileMsg] = React.useState(null);
@@ -3513,7 +3693,6 @@ const [data, setData] = React.useState(null);
                 constitution: draft.constitution,
                 self_model: draft.self_model,
                 self_image: draft.self_image,
-                identity: JSON.stringify(idFields),
               }),
             });
             setSaved({ constitution: res.constitution || "", self_model: res.self_model || "", self_image: res.self_image || "" });
@@ -3543,11 +3722,8 @@ const [data, setData] = React.useState(null);
 
         return h("div", { className: "dsh-remembers-settings", style: S.wrap },
 
-          h("div", { style: S.desc },
-            "人格和记忆放在同一个服务里：前者每轮必带，后者检索着取。",
-            "「身份与约定」只有你能改；「自我认知」AI 也会往里写 —— 服务端根本没给它改前一半的接口。",
-            "两段都留空 = 整段不注入，等于没装。",
-          ),
+          h("div", { style: S.desc }, "选择每个渠道使用的人物卡，卡片内容作为该渠道的人物提示词。"),
+          h(PersonaCards),
 
           error ? h("div", { style: S.notice("error") }, error) : null,
 
@@ -3666,219 +3842,9 @@ const [data, setData] = React.useState(null);
 
           h("div", { style: S.card },
 
-            h("div", { style: S.card },
-              h("div", { style: { ...S.label, marginBottom: 8 } }, "身份（逐项填）"),
-              h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 } },
-                h("div", { style: { display: "flex", flexDirection: "column", gap: 4 } },
-                  h("span", { style: { ...S.muted, fontSize: 12 } }, "名字"),
-                  h("input", { style: S.input, value: idFields.name, placeholder: "例：沧澜", onChange: (ev) => setId("name", ev.target.value) }),
-                ),
-                h("div", { style: { display: "flex", flexDirection: "column", gap: 4 } },
-                  h("span", { style: { ...S.muted, fontSize: 12 } }, "自称"),
-                  h("input", { style: S.input, value: idFields.self_call, placeholder: "例：本澜", onChange: (ev) => setId("self_call", ev.target.value) }),
-                  h("span", { style: { fontSize: 11, color: "var(--dsw-alias-label-secondary)" } },
-                    "有多个用逗号或顿号分隔，如：本澜、澜澜、咱澜"),
-                  h("label", {
-                    style: {
-                      display: "flex", alignItems: "flex-start", gap: 6, cursor: "pointer", marginTop: 4,
-                      padding: "8px 10px", borderRadius: 8,
-                      border: "1.5px solid " + (idFields.self_call_in_speech === true ? "color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary))" : "var(--dsw-alias-border-l4)"),
-                      background: idFields.self_call_in_speech === true ? "color-mix(in srgb, color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary)) 10%, var(--dsw-alias-bg-layer-1))" : "var(--dsw-alias-bg-layer-1)",
-                      transition: "border-color .15s, background .15s",
-                    },
-                  },
-                    h("input", {
-                      type: "checkbox",
-                      checked: idFields.self_call_in_speech === true,
-                      onChange: (ev) => setId("self_call_in_speech", ev.target.checked),
-                      style: { marginTop: 1 },
-                    }),
-                    h("span", { style: { display: "flex", flexDirection: "column", gap: 1 } },
-                      h("span", { style: { fontSize: 12 } }, "说话时带自称"),
-                      h("span", { style: { fontSize: 11, color: "var(--dsw-alias-label-secondary)" } },
-                        "默认关（日常用「我」，更自然）"),
-                    ),
-                  ),
-                ),
-                h("div", { style: { display: "flex", flexDirection: "column", gap: 4 } },
-                  h("span", { style: { ...S.muted, fontSize: 12 } }, "怎么叫老大"),
-                  h("input", { style: S.input, value: idFields.user_call, placeholder: "例：老大", onChange: (ev) => setId("user_call", ev.target.value) }),
-                ),
-                h("div", { style: { display: "flex", flexDirection: "column", gap: 4 } },
-                  h("span", { style: { ...S.muted, fontSize: 12 } }, "脾气"),
-                  h("input", { style: S.input, value: idFields.personality, placeholder: "例：饭饭是本体，被叫大肥鱼会炸毛", onChange: (ev) => setId("personality", ev.target.value) }),
-                ),
-              ),
-              h("div", { style: { display: "flex", flexDirection: "column", gap: 4, marginTop: 10 } },
-                h("span", { style: { ...S.muted, fontSize: 12 } }, "说话方式"),
-                h("textarea", {
-                  style: { ...S.input, minHeight: 60, resize: "vertical", fontFamily: "inherit" },
-                  value: idFields.speaking,
-                  placeholder: "例：像发微信，最多 3 句、80 字以内，只发对话，不写动作旁白。",
-                  onChange: (ev) => setId("speaking", ev.target.value),
-                }),
-                h("label", {
-                  style: {
-                    display: "flex", alignItems: "flex-start", gap: 6, cursor: "pointer", marginTop: 4,
-                    padding: "8px 10px", borderRadius: 8,
-                    border: "1.5px solid " + (idFields.ai_flavor_on !== false ? "color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary))" : "var(--dsw-alias-border-l4)"),
-                    background: idFields.ai_flavor_on !== false ? "color-mix(in srgb, color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary)) 10%, var(--dsw-alias-bg-layer-1))" : "var(--dsw-alias-bg-layer-1)",
-                    transition: "border-color .15s, background .15s",
-                  },
-                },
-                  h("input", {
-                    type: "checkbox",
-                    checked: idFields.ai_flavor_on !== false,
-                    onChange: (ev) => setId("ai_flavor_on", ev.target.checked),
-                    style: { marginTop: 1 },
-                  }),
-                  h("span", { style: { fontSize: 12 } }, "去 AI 味（默认开启）"),
-                ),
-                h("textarea", {
-                  style: { ...S.input, minHeight: 60, resize: "vertical", fontFamily: "inherit", opacity: idFields.ai_flavor_on === false ? 0.5 : 1 },
-                  value: idFields.ai_flavor,
-                  placeholder: "人味瑕疵清单，可以改",
-                  onChange: (ev) => setId("ai_flavor", ev.target.value),
-                  disabled: idFields.ai_flavor_on === false,
-                }),
-              ),
-              h("div", { style: { display: "flex", flexDirection: "column", gap: 4, marginTop: 10 } },
-                h("div", { style: { display: "flex", alignItems: "center", gap: 8 } },
-                  h("span", { style: { ...S.muted, fontSize: 12 } }, "不能做的事"),
-                  h("span", { style: { fontSize: 11, color: "var(--dsw-alias-label-secondary)" } }, "（勾上 = 生效，取消勾 = 暂时不管）"),
-                ),
-                (() => {
-                  const items = String(idFields.taboo || "").split("\n").map((s) => s.trim()).filter(Boolean);
-                  const setItems = (arr) => setId("taboo", arr.join("\n"));
-                  return h("div", {},
-                    items.length ? h("div", { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 } },
-                      ...items.map((it, i) => {
-                        const offList = String(idFields.taboo_off || "").split("\n").map((s) => s.trim()).filter(Boolean);
-                        const on = !offList.includes(it);
-                        const toggleOn = () => {
-                          const next = on ? [...offList, it] : offList.filter((x) => x !== it);
-                          setId("taboo_off", next.join("\n"));
-                        };
-                        return h("label", {
-                          key: "tb" + i,
-                          style: {
-                            display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12, cursor: "pointer",
-                            padding: "8px 10px", borderRadius: 8,
-                            border: "1.5px solid " + (on ? "color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary))" : "var(--dsw-alias-border-l4)"),
-                            background: on ? "color-mix(in srgb, color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary)) 10%, var(--dsw-alias-bg-layer-1))" : "var(--dsw-alias-bg-layer-1)",
-                            transition: "border-color .15s, background .15s",
-                            height: "100%", boxSizing: "border-box",
-                          },
-                        },
-                          h("input", {
-                            type: "checkbox",
-                            checked: on,
-                            onChange: (ev) => { ev.stopPropagation(); toggleOn(); },
-                            style: { marginTop: 2, flexShrink: 0 },
-                          }),
-                          h("span", { style: { flex: 1, lineHeight: "18px" } }, it),
-                          h("span", {
-                            style: { cursor: "pointer", opacity: 0.55, padding: "0 4px", fontSize: 14, lineHeight: "18px", flexShrink: 0 },
-                            onClick: (ev) => { ev.preventDefault(); ev.stopPropagation(); setItems(items.filter((_, j) => j !== i)); },
-                          }, "×"),
-                        );
-                      }),
-                    ) : h("div", { style: { ...S.muted, fontSize: 12 } }, "还没加（空着就是没有额外限制）"),
-                    h("div", { style: { display: "flex", gap: 6, marginTop: 8 } },
-                      h("input", {
-                        style: { ...S.input, flex: 1 },
-                        placeholder: "加一条（例如：不讨好、不卑微）",
-                        value: idFields._newTaboo || "",
-                        onChange: (ev) => setId("_newTaboo", ev.target.value),
-                        onKeyDown: (ev) => {
-                          if (ev.key === "Enter" && (idFields._newTaboo || "").trim()) {
-                            setItems([...items, idFields._newTaboo.trim()]);
-                            setId("_newTaboo", "");
-                          }
-                        },
-                      }),
-                      h("button", {
-                        style: { ...S.btn(false), fontSize: 12 },
-                        onClick: () => {
-                          if ((idFields._newTaboo || "").trim()) {
-                            setItems([...items, idFields._newTaboo.trim()]);
-                            setId("_newTaboo", "");
-                          }
-                        },
-                      }, "加"),
-                    ),
-                  );
-                })(),
-              ),
-              h("div", { style: { display: "flex", flexDirection: "column", gap: 4, marginTop: 10 } },
-                h("span", { style: { ...S.muted, fontSize: 12 } }, "她的形象（可替换）"),
-                h("textarea", {
-                  style: { ...S.input, minHeight: 60, resize: "vertical", fontFamily: "inherit" },
-                  value: draft.self_image,
-                  placeholder: "例：圆尾巴、蓝白发、女仆围裙的鲸鱼娘。尾巴尖会跟着情绪动。",
-                  onChange: (ev) => set({ self_image: ev.target.value }),
-                }),
-                h("span", { style: { fontSize: 11, color: "var(--dsw-alias-label-secondary)" } },
-                  "外观、穿戴、身体特征。想换成猫娘、龙娘随便什么形象，只改这里。"),
-              ),
-              h("div", { style: { display: "flex", flexDirection: "column", gap: 4, marginTop: 10 } },
-                h("label", {
-                  style: {
-                    display: "flex", alignItems: "flex-start", gap: 6, cursor: "pointer",
-                    padding: "8px 10px", borderRadius: 8,
-                    border: "1.5px solid " + (!!idFields.think_cn ? "color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary))" : "var(--dsw-alias-border-l4)"),
-                    background: !!idFields.think_cn ? "color-mix(in srgb, color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary)) 10%, var(--dsw-alias-bg-layer-1))" : "var(--dsw-alias-bg-layer-1)",
-                    transition: "border-color .15s, background .15s",
-                  },
-                },
-                  h("input", {
-                    type: "checkbox",
-                    checked: !!idFields.think_cn,
-                    onChange: (ev) => setId("think_cn", ev.target.checked),
-                    style: { marginTop: 1 },
-                  }),
-                  h("span", { style: { fontSize: 12 } }, "思考链用中文"),
-                ),
-                h("span", { style: { fontSize: 11, color: "var(--dsw-alias-label-secondary)" } },
-                  "勾上会把「思考链用中文」写进人格注入。注意：中文比英文更耗 token。"),
-              ),
-              h("div", { style: { display: "flex", flexDirection: "column", gap: 4, marginTop: 10 } },
-                h("label", {
-                  style: {
-                    display: "flex", alignItems: "flex-start", gap: 6, cursor: "pointer",
-                    padding: "8px 10px", borderRadius: 8,
-                    border: "1.5px solid " + (!!idFields.think_ds ? "color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary))" : "var(--dsw-alias-border-l4)"),
-                    background: !!idFields.think_ds ? "color-mix(in srgb, color-mix(in srgb, var(--dsw-alias-link) 75%, var(--dsw-alias-label-primary)) 10%, var(--dsw-alias-bg-layer-1))" : "var(--dsw-alias-bg-layer-1)",
-                    transition: "border-color .15s, background .15s",
-                  },
-                },
-                  h("input", {
-                    type: "checkbox",
-                    checked: !!idFields.think_ds,
-                    onChange: (ev) => setId("think_ds", ev.target.checked),
-                    style: { marginTop: 1 },
-                  }),
-                  h("span", { style: { fontSize: 12 } }, "思考链按 DeepSeek V3.2 风格"),
-                ),
-                h("span", { style: { fontSize: 11, color: "var(--dsw-alias-label-secondary)" } },
-                  "勾上会让模型按 V3.2 的思路走：先拆关键点、分条想清楚、再落结论。"),
-              ),
-              h("div", { style: { display: "flex", flexDirection: "column", gap: 4, marginTop: 10 } },
-                h("span", { style: { ...S.muted, fontSize: 12 } }, "其他自由发挥"),
-                h("textarea", {
-                  style: { ...S.input, minHeight: 60, resize: "vertical", fontFamily: "inherit" },
-                  value: idFields.free,
-                  placeholder: "例：其余按你的性子来，有情绪起伏。",
-                  onChange: (ev) => setId("free", ev.target.value),
-                }),
-              ),
-              h("div", { style: { ...S.muted, fontSize: 11, marginTop: 6 } },
-                "这些会每轮注入。形象和更长的人设放下面两个框。"),
-            ),
-
             h(Field, {
-              label: "自我认知（AI 可写）",
-              hint: "AI 会在这里记「我发现自己是什么样」。你随时可以改回去，它下次再写 —— 这部分本来就是会漂的。",
+              label: "旧版自我认知（AI 可写）",
+              hint: "这部分保留给其他会话；QQ 和 B 站使用人物卡时不注入旧版自我认知。",
             },
               h("textarea", {
                 style: textareaStyle,
@@ -3894,16 +3860,12 @@ const [data, setData] = React.useState(null);
 
           h("div", {
             style: {
-              position: "fixed", right: 24, top: "50%", transform: "translateY(-50%)",
-              display: "flex", flexDirection: "column", alignItems: "stretch", gap: 8,
-              background: "var(--dsw-alias-bg-layer-1)", padding: "12px 16px", borderRadius: 12,
-              border: 0, boxShadow: "var(--dsw-elevation-panel)", zIndex: 9999,
-              minWidth: 140,
+              display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8,
             },
           },
             notice ? h("div", { style: { fontSize: 12, color: notice.kind === "error" ? "color-mix(in srgb, var(--dsw-alias-state-error-primary) 60%, var(--dsw-alias-label-primary))" : "color-mix(in srgb, var(--dsw-alias-state-success-primary) 60%, var(--dsw-alias-label-primary))", textAlign: "center" } }, notice.text) : null,
             h("button", { type: "button", style: S.btn(true), onClick: save, disabled: saving },
-              saving ? "保存中…" : "保存"),
+              saving ? "保存中…" : "保存用户画像与自我认知"),
           ),
         );
       }
@@ -3911,6 +3873,24 @@ const [data, setData] = React.useState(null);
       // -- 注册 -------------------------------------------------------------
 
       function apply(ctx) {
+        const conversation = ctx.get("uiConversation");
+        ctx.effect(() => conversation.events.register({
+          kind: "dsh-remembers-meme", target: "chat",
+          match: (event) => {
+            const data = event.data;
+            if (event.type !== "plugin:dsh-remembers/meme" || event.ignorable !== true || !data || data.channel !== "web"
+              || !Number.isSafeInteger(data.turn) || typeof data.reason !== "string"
+              || !["sent", "failed"].includes(data.status)) return null;
+            if (data.status === "sent" && (typeof data.file !== "string" || !data.file || /[\\/]/.test(data.file) || data.file === "." || data.file === "..")) return null;
+            return { id: String(event.seq), role: "start" };
+          },
+          start: (_context, match) => ({ seq: match.event.seq, time: match.event.time, data: match.event.data }),
+          update: context => context.state,
+          buildViewNode: context => context.state ? {
+            key: context.key, kind: "dsh-remembers-meme", id: context.id, target: "chat",
+            anchorSeq: context.state.seq, location: context.start.location, visibility: "visible", groupTree: "turn", data: context.state,
+          } : null,
+        }));
         ctx.effect(() => {
           const style = document.createElement("style");
           style.textContent = SETTINGS_CSS;
@@ -3932,6 +3912,9 @@ const [data, setData] = React.useState(null);
             },
             SettingsSection,
           ));
+          slots.inject("conversation.chat.node", () => slots.register({
+            name: "conversation.chat.node", key: "dsh-remembers-meme",
+          }, MemeChatNode));
           slots.inject("settings.section", () => slots.register(
             {
               name: "settings.section",
@@ -3984,7 +3967,7 @@ const [data, setData] = React.useState(null);
       }
 
       exports.apply = apply;
-      exports.inject = ["slots"];
+      exports.inject = ["slots", "uiConversation"];
       return module.exports;
     } catch (err) {
       try {

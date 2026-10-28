@@ -59,6 +59,20 @@ class BiliPersistenceTest(unittest.TestCase):
                 list(pool.map(save, range(24)))
         self.assertEqual(self.handler()._load_bili_whale()["fields"], {str(i): i for i in range(24)})
 
+    def test_write_limits_are_validated_and_preserve_other_risk_settings(self):
+        self.path.write_text('{"risk":{"writeGapSec":120}}\n', encoding="utf-8")
+        handler = self.handler()
+        handler._update_bili_whale([
+            {"path": ["risk", "writeDaily"], "value": 80},
+            {"path": ["risk", "writeHourly"], "value": 20},
+        ])
+        self.assertEqual(handler._load_bili_whale()["risk"], {"writeGapSec": 120, "writeDaily": 80, "writeHourly": 20})
+        before = self.path.read_bytes()
+        for value in (0, -1, 1.5, True, "12", 100001):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                handler._update_bili_whale([{"path": ["risk", "writeDaily"], "value": value}])
+            self.assertEqual(self.path.read_bytes(), before)
+
     def test_invalid_batch_keeps_all_original_bytes(self):
         before = self.path.read_bytes()
         handler = self.handler()

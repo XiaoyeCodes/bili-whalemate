@@ -40,7 +40,8 @@
       "interact": true,
       "dmReply": true,
       "strangerReply": true,
-      "ownerReply": true
+      "ownerReply": true,
+      "dynamic": false
     },
     "daily": {
       "browse": {
@@ -58,7 +59,41 @@
       "interact": {
         "min": 0,
         "max": 1
+      },
+      "dynamic": {
+        "min": 1,
+        "max": 3
       }
+    },
+    "actionProbability": {
+      "recommend": 50,
+      "comment": 50,
+      "interact": 50
+    },
+    "lifePosts": {
+      "startHour": 8,
+      "endHour": 23,
+      "minGapMinutes": 180,
+      "maxChars": 260,
+      "maxTokens": 1024,
+      "verifySeconds": 45,
+      "verifyPollSeconds": 5,
+      "weatherTimeoutSeconds": 10,
+      "weatherCacheMinutes": 30,
+      "weatherMaxAgeMinutes": 120,
+      "recentPosts": 8,
+      "duplicateSimilarity": 0.9,
+      "themes": [
+        "fishlife",
+        "philosophy",
+        "world",
+        "daily",
+        "food",
+        "weather",
+        "holiday"
+      ],
+      "prompt": "围绕选中的主题，用当前人物卡的口吻写一到三句自然的日常动态，不写工作汇报。",
+      "allowMemes": true
     },
     "dmDailyMax": 20,
     "dmPollSeconds": 60,
@@ -69,7 +104,9 @@
     "strangerPollSeconds": 60,
     "strangerAllDay": true,
     "strangerBatchSize": 3,
+    "replyThinkingEnabled": false,
     "ownerCommentDailyMax": 20,
+    "maxCommentSendAttempts": 3,
     "pictureVerifySeconds": 45,
     "pictureVerifyPollSeconds": 5,
     "startHour": 8,

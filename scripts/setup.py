@@ -163,6 +163,8 @@ def setup(home, profile, python, node, gallery, port=8080, bridge_port=3081):
         save(bridge, {"port": bridge_port, "token": secrets.token_urlsafe(48), "pairingCode": secrets.token_hex(4),
             "ownerOpenId": "", "maxMessageChars": 10000, "jobTimeoutMs": 180000, "maxHistoryEntries": 200,
             "journalPath": str(data / "qq-automation-events.jsonl")})
+    bridge_config = load(bridge)
+    save(bridge, {**bridge_config, "serviceEndpoint": f"http://127.0.0.1:{port}", "memeDir": str(media)})
     runtime = home / "whalemate/runtime.json"
     current_runtime = load(runtime) if runtime.exists() else {}
     # Explicit setup arguments select paths/ports; secrets live in separate files and are untouched.

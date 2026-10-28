@@ -28,6 +28,8 @@ class GalleryRuntimeTest(unittest.TestCase):
         draft = self.runtime.draft_dm({"text": "你好"}, self.cfg)
         self.assertEqual(draft["meme_file"], "hello.png")
         self.model.chat_json.assert_called_once()
+        self.assertFalse(self.model.chat_json.call_args.kwargs["thinking"])
+        self.assertTrue(self.model.chat_json.call_args.kwargs["strict"])
         self.gallery.offer.assert_called_once_with(0.2, query="  你好 ")
 
     def test_stranger_thread_draft_does_not_offer_gallery_images(self):
@@ -36,6 +38,21 @@ class GalleryRuntimeTest(unittest.TestCase):
         self.assertIsNone(draft["meme_file"])
         self.gallery.offer.assert_not_called()
         self.assertNotIn("private-owner-data", self.model.chat_json.call_args.args[0])
+
+    def test_reply_thinking_can_be_enabled_by_saved_configuration(self):
+        self.cfg["replyThinkingEnabled"] = True
+        self.model.chat_json.return_value = {"text": "你好", "meme_file": None}
+        self.runtime.draft_stranger({"text": "你好"}, self.cfg)
+        self.assertTrue(self.model.chat_json.call_args.kwargs["thinking"])
+
+    def test_empty_reply_failure_stops_before_any_bilibili_write(self):
+        from llm import LLMRequestFailure
+        self.model.chat_json.side_effect = LLMRequestFailure("EMPTY_CONTENT", "模型返回空白回复")
+        self.runtime.command = Mock()
+        with self.assertRaisesRegex(LLMRequestFailure, "空白"):
+            self.runtime.draft_stranger({"text": "你好"}, self.cfg)
+        self.model.chat_json.assert_called_once()
+        self.runtime.command.assert_not_called()
 
     def test_thread_publisher_ignores_a_supplied_image_and_sends_no_image_link(self):
         self.runtime.command = Mock(side_effect=[{"ok": True}, {"ok": True, "combined": "rpid=456"}])

@@ -11,6 +11,15 @@ if (JSON.parse(readFileSync(join(gateway, "..", "..", "package.json"), "utf8")).
   throw new Error("This adapter supports only official QQ plugin 0.5.2");
 }
 const entry = join(gateway, "bootstrap.js");
+function writeEntry(value) {
+  writeFileSync(entry + ".whalemate.tmp", value);
+  renameSync(entry + ".whalemate.tmp", entry);
+}
+function copyHelper(name) {
+  const destination = join(gateway, name);
+  copyFileSync(join(source, name), destination + ".whalemate.tmp");
+  renameSync(destination + ".whalemate.tmp", destination);
+}
 const original = readFileSync(entry, "utf8");
 let text = original.replace(/\r\n/g, "\n");
 if (!existsSync(join(home, "remembers-service", "official-qq-bridge.json"))) {
@@ -34,11 +43,35 @@ if (!text.includes('import { installOfficialQqBridge }')) {
   const backup = join(home, "backups", "official-qq-gateway-" + Date.now());
   mkdirSync(backup, { recursive: true });
   writeFileSync(join(backup, "bootstrap.js"), original);
-  // Replace the profile-owned inode; pnpm may hard-link the original to its shared store.
-  writeFileSync(entry + ".whalemate.tmp", text);
-  renameSync(entry + ".whalemate.tmp", entry);
+  writeEntry(text);
 }
-const helper = join(gateway, "local-automation-bridge.mjs");
-copyFileSync(join(source, "official-qq-bridge.mjs"), helper + ".whalemate.tmp");
-renameSync(helper + ".whalemate.tmp", helper);
+const bridge = join(gateway, "local-automation-bridge.mjs");
+copyFileSync(join(source, "official-qq-bridge.mjs"), bridge + ".whalemate.tmp");
+renameSync(bridge + ".whalemate.tmp", bridge);
+copyHelper("qq-meme-auto.mjs");
+for (const file of ["qq-reply-style.mjs", "expression-style.mjs", "expression-style.json"]) copyHelper(file);
+text = readFileSync(entry, "utf8").replace(/\r\n/g, "\n");
+if (!text.includes("automation?.memeAuto?.observe") && !text.includes('automation.replyStyle.route')) {
+  const before = "        if (automation?.mutedSessions.has(session.header.id)) return;";
+  if (text.split(before).length !== 2) throw new Error("Tencent gateway event hook changed; review before applying");
+  text = text.replace(before, "        automation?.memeAuto?.observe(session, event, automation.mutedSessions.has(session.header.id));\n" + before);
+}
+if (!text.includes("sendImage: mediaSender.sendImage")) {
+  const before = "sendMarkdown: sender.sendMarkdown, logger";
+  if (text.split(before).length !== 2) throw new Error("Tencent gateway lifecycle changed; review before applying");
+  text = text.replace(before, "sendMarkdown: sender.sendMarkdown, sendImage: mediaSender.sendImage, logger");
+}
+writeEntry(text);
+if (!text.includes('import { chunkMarkdownText }')) {
+  text = text.replace('import { createUserMessage } from "@deepseek-ai/dsh-llm";', 'import { createUserMessage } from "@deepseek-ai/dsh-llm";\nimport { chunkMarkdownText } from "../transport/chunker.js";');
+}
+if (!text.includes('chunkText: text => chunkMarkdownText')) {
+  text = text.replace('sendImage: mediaSender.sendImage, logger', 'sendImage: mediaSender.sendImage, chunkText: text => chunkMarkdownText(text, config.textChunkLimit), logger');
+}
+const oldHook = '        automation?.memeAuto?.observe(session, event, automation.mutedSessions.has(session.header.id));\n        if (automation?.mutedSessions.has(session.header.id)) return;\n        return outboundHandler(session, event);';
+if (!text.includes('automation.replyStyle.route')) {
+  if (text.split(oldHook).length !== 2) throw new Error('Tencent reply hook changed; review before applying');
+  text = text.replace(oldHook, '        if (automation) return automation.replyStyle.route(session, event, outboundHandler, automation.mutedSessions.has(session.header.id));\n        return outboundHandler(session, event);');
+}
+writeEntry(text);
 console.log("Official QQ scheduler adapter installed. Restart the dsh web profile to load it.");

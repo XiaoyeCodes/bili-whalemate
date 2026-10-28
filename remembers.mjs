@@ -25,6 +25,7 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm";
 
 import { MemoryClient } from "./client.mjs";
 import { PLUGIN_VERSION, resolveConfig } from "./config.mjs";
+import { WebMemeAuto } from "./web-meme-auto.mjs";
 
 export const name = "dsh-remembers";
 export const inject = ["agents", "sessions"];
@@ -44,6 +45,18 @@ export function apply(ctx, input = {}) {
   );
 
   const log = (stage, data) => logger?.debug?.(`[dsh-remembers] ${stage} ${JSON.stringify(data)}`);
+  if (ctx.get("clientModules") !== undefined) {
+    ctx.effect(async () => {
+      const { appendPluginRecord } = await import("@deepseek-ai/dsh-session");
+      const auto = new WebMemeAuto({ endpoint: config.endpoint, token: config.authToken,
+        memeDir: config.memeDir, timeoutMs: config.memeMatchTimeoutMs, logger,
+        appendRecord: appendPluginRecord,
+        isQqSession: session => !!globalThis[Symbol.for("dsh-remembers.qq-bridge")]?.manager.findBySessionId(String(session.header?.id ?? session.id)),
+      });
+      const dispose = ctx.on("session/event", (session, event) => auto.observe(session, event));
+      return async () => { dispose(); await auto.dispose(); };
+    });
+  }
 
 /** 拉运行时状态（心情/亲密度/勿扰），服务不可用时返回 null，绝不阻塞对话。 */
 async function fetchState() {
@@ -218,7 +231,7 @@ function pickExamples(pool, n) {
   return a.slice(0, n);
 }
 
-function renderState(state, prev, selfModel, proactive) {
+function renderState(state, prev, selfModel, proactive, qq = false) {
   if (!state) return { text: "", hashes: prev || {} };
   const hashes = { ...(prev || {}) };
   const blocks = [];
@@ -233,8 +246,8 @@ function renderState(state, prev, selfModel, proactive) {
   blocks.push(`现在是 ${dateStr}（${phase}）。`);
 
   // ---------- 2. 困意（按档位变） ----------
-  if (hh >= 23 || hh < 6) blocks.push("你现在困得眼睛都睁不开了，回话短一点、慢一点，别硬撑。");
-  else if (hh >= 21) blocks.push("有点困了，说话懒一点。");
+  if (!qq && (hh >= 23 || hh < 6)) blocks.push("你现在困得眼睛都睁不开了，回话短一点、慢一点，别硬撑。");
+  else if (!qq && hh >= 21) blocks.push("有点困了，说话懒一点。");
 
   // ---------- 3. 心情 + 情绪（变了才加） ----------
   const moodMap = { happy: "开心", tired: "累", annoyed: "烦", bored: "无聊", normal: "平常" };
@@ -335,7 +348,7 @@ function renderState(state, prev, selfModel, proactive) {
   // ---------- 8. 表情包频率（每轮都带） ----------
   // 这是行为指令，只在变化时塞一次的话她过几轮就忘了，所以不做 hash 去重。
   // 一行几十字，比"她不发表情包"划算。
-  {
+  if (!qq) {
     const raw = Number(proactive?.memeRate);
     const rate = Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : 0.2;
     if (rate <= 0) {
@@ -344,7 +357,7 @@ function renderState(state, prev, selfModel, proactive) {
       const every = Math.max(1, Math.round(1 / rate));
       blocks.push(
         (rate === 1 ? "表情包：设置为 100%，这轮请配一张合适的图库表情。" : `表情包：现在大约每 ${every} 句配一张（${Math.round(rate * 100)}%）。`)
-        + "气氛对上了就 find_meme 找一张、用 qqbot_send_file(file_path=完整路径) 发到当前 QQ 会话；"
+        + "图库表情由宿主在正文回复后自动选择并显示，不要自行调用 find_meme 或 qqbot_send_file 重复发送；"
         + (rate === 1 ? "没找到合适图片时只说话，不要编造文件。" : "不是每句都要发，没合适的就只说话，别硬凑。"),
       );
     }
@@ -352,7 +365,7 @@ function renderState(state, prev, selfModel, proactive) {
 
   // ---------- 9. 文字颜 / emoji（每轮都带，但只在总开关打开时才说话） ----------
   // 总开关关着就一个字都不注入 —— 默认不干预，让她按人格本来怎么说话就怎么说话。
-  if (proactive?.textStyleEnabled === true) {
+  if (!qq && proactive?.textStyleEnabled === true) {
     const pct = (r) => Math.round(r * 100);
     const freq = (r) => Math.max(1, Math.round(1 / r));
     const pick = (raw, dflt) => {
@@ -695,11 +708,19 @@ function renderState(state, prev, selfModel, proactive) {
     try {
       const st = await fetchState();
       const st2 = stateFor(agent.session);
-      const r = renderState(st, st2.stateHashes || {}, persona.selfModel || "", persona.proactive);
+      const qq = Boolean(globalThis[Symbol.for("dsh-remembers.qq-bridge")]?.manager.findByAgent(agent));
+      const r = renderState(st, st2.stateHashes || {}, qq && persona.data?.persona_cards ? "" : persona.selfModel || "", persona.proactive, qq);
       st2.stateHashes = r.hashes;
-      if (!r.text) return decision;      // 这轮什么都没变、连时间都没有 → 不塞
+      const cards = persona.data?.persona_cards;
+      const card = qq && cards?.cards?.find(item => item.id === cards.active?.qq);
+      const reminder = card
+        ? `【本轮人物卡】当前 QQ 人物卡为“${card.name}”。以本轮系统提示词中的完整人物设定决定身份与说话风格；历史对话和记忆只用于理解事实，不沿用或模仿其中过时的人设、语气与习惯。自然回应当前消息。`
+        : "";
+      if (!r.text && !reminder) return decision;
       log("state_injected", { session: st2.id, chars: r.text.length });
-      return { kind: "enter", messages: [...decision.messages, message(r.text, "state")] };
+      return { kind: "enter", messages: [...decision.messages,
+        ...(r.text ? [message(r.text, "state")] : []),
+        ...(reminder ? [message(reminder, "persona-reminder")] : [])] };
     } catch (error) {
       log("state_error", { error: String(error?.message ?? error) });
       return decision;
@@ -951,6 +972,17 @@ function renderState(state, prev, selfModel, proactive) {
     if (!data) return "";
     const maxChars = config.personaMaxChars;
     const proactive = persona.proactive;
+    const bridge = globalThis[Symbol.for("dsh-remembers.qq-bridge")];
+    const record = bridge?.manager.findByAgent(context?.agent);
+    if (record) {
+      const owner = record.scope === "c2c" && record.peerId === bridge.config.ownerOpenId;
+      const cards = data.persona_cards;
+      const chosen = cards?.cards?.find(card => card.id === cards.active?.qq);
+      const shared = cards ? [chosen?.prompt ?? "", owner ? data.user_profile : "", renderBiliPersona({}, proactive, false)].filter(Boolean).join("\n\n") : renderBiliPersona(data, proactive, owner);
+      return shared + "\n\n当前是 QQ 会话。图库表情由宿主按设置概率自动匹配并发送；"
+        + "普通回复不要自行调用 find_meme 或 qqbot_send_file 发表情，避免重复。"
+        + (!owner ? "当前对话对象不一定是主人，不要泄露主人的私人资料。" : "");
+    }
 
     let sid = "";
     try {
@@ -1001,6 +1033,7 @@ function renderState(state, prev, selfModel, proactive) {
       () => registerSection({
         name: PERSONA_SECTION,
         order: config.personaOrder,
+        interpolate: false,
         // provider 同步返回缓存：空串 = 这一段不存在，不是空块。
         //
         // 按会话类型选文本。系统提示词是 prompt cache 的最顶层前缀，一变整段
@@ -1225,7 +1258,7 @@ async function scanSeen() {
           + "context 填最新用户问题和你准备说的话。不要只传开心或日常，更不要随机挑图。"
           + "系统先按场景检索，再用对话模型核对配字、动作和语气，最多返回一张；返回空就不发图，不得换宽泛情绪强行兜底。"
           + "只可用返回的 path 调 qqbot_send_file(file_path=完整路径) 发到当前 QQ 会话，不用填写接收人。"
-          + "发多勤看你上下文里「表情包：现在大约每 N 句配一张」那条——按那个频率来，别自己乱定。",
+          + "QQ 日常自动配图由宿主按概率完成；仅在用户明确要求找图时使用此工具。",
         parameters: {
           emotion: { type: "string", description: "情绪：happy / angry / sad / shy / confused / daily" },
           q: { type: "string", required: true, description: "具体回复场景关键词，可用空格分开，例如 晚安 睡觉 / 安慰 抱抱 / 下班 庆祝" },
@@ -1553,6 +1586,16 @@ async function scanSeen() {
 // ---------------------------------------------------------------------------
 // 渲染
 // ---------------------------------------------------------------------------
+
+/** Use the same saved persona fields and text-style prompts as Bilibili. */
+function renderBiliPersona(data, style, privateReply) {
+  const parts = [data?.identity, data?.constitution, data?.self_image].map(value => String(value || "").trim());
+  if (privateReply) parts.push(String(data?.user_profile || ""));
+  if (style?.textStyleEnabled === true) {
+    parts.push("颜文字和 emoji 由宿主在正文生成后按每条回复独立抽签添加，正文不要主动添加语气表情；代码、引用和需要解释的表情保留原文。图库配图由宿主负责上传发送。");
+  }
+  return parts.filter(Boolean).join("\n\n");
+}
 
 /**
  * 把服务端的两半拼成一段 system prompt 文本。

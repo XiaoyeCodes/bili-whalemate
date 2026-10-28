@@ -46,6 +46,9 @@ class SetupTest(unittest.TestCase):
             self.assertEqual(db.execute("select used_count,keywords from meme").fetchone(), (0, "自动回复禁用"))
         self.assertEqual(setup.load(self.home / "bili-whale.config.json")["owner"], {"mid": "", "name": ""})
         self.assertNotIn("llm_key", setup.load(self.home / "remembers-data/config.json"))
+        bridge = setup.load(self.home / "remembers-service/official-qq-bridge.json")
+        self.assertEqual(bridge["serviceEndpoint"], "http://127.0.0.1:18080")
+        self.assertEqual(bridge["memeDir"], str(self.home / "media/whalemate"))
 
     def test_reinstall_preserves_keys_accounts_history_and_changed_preferences(self):
         self.install()

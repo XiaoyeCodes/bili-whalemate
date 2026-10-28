@@ -196,11 +196,12 @@ def _init() -> None:
     from bili_gallery import BiliGallery
     global bili_automation
     handler_factory = lambda: object.__new__(Handler)
-    runtime = BiliRuntime(handler_factory, lambda: llm, store.get_persona, DSH_ROOT, DATA_DIR,
+    runtime = BiliRuntime(handler_factory, lambda: llm, lambda: handler_factory()._persona_payload(store.get_persona()), DSH_ROOT, DATA_DIR,
                           style=lambda: handler_factory()._load_proactive(),
                           gallery=BiliGallery(lambda: store.meme_list(limit=500), store.meme_mark_used,
                               os.environ.get("CMEM_MEME_DIR", "/home/ubuntu/.dsh/media/onebot/memes"),
-                              os.path.join(DATA_DIR, "bili-gallery-cache"), ranker=store.meme_candidates))
+                              os.path.join(DATA_DIR, "bili-gallery-cache"),
+                              ranker=lambda query, general: store.meme_candidates(query, include_general=general)), state=store.get_state)
     bili_automation = BiliAutomation(AutomationLedger(os.path.join(DATA_DIR, "bili-automation.sqlite3")), runtime,
         lambda: handler_factory()._load_bili_whale().get("automation"), lambda: handler_factory()._bili_enabled())
 
@@ -345,6 +346,11 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, _public_status())
         elif path == "/bili/automation":
             self._guard(lambda: self._json(200, self._automation_status()))
+        elif path == "/memes/delivery-status":
+            self._guard(self._get_meme_delivery_status)
+        elif path == "/bili/write-usage":
+            from bili_write_usage import write_usage
+            self._guard(lambda: self._json(200, write_usage(limits=self._load_bili_whale().get("risk"))))
         elif path == "/bili/cfg":
             self._json(200, self._load_bili_whale())
         elif path == "/memories":
@@ -479,6 +485,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, st)
         elif path == "/persona":
             self._guard(self._get_persona)
+        elif path == "/persona/cards":
+            self._guard(self._get_persona_cards)
         elif path == "/export":
             self._guard(self._export)
         elif path == "/config":
@@ -509,12 +517,16 @@ class Handler(BaseHTTPRequestHandler):
             self._guard(self._set_state)
         elif path == "/persona":
             self._guard(self._set_persona)
+        elif path == "/persona/cards":
+            self._guard(self._set_persona_cards)
         elif path == "/persona/self":
             self._guard(self._set_self_model)
         elif path == "/extract":
             self._guard(self._extract)
         elif path == "/memes/search":
             self._guard(self._match_meme)
+        elif path == "/memes/delivery-status":
+            self._guard(self._set_meme_delivery_status)
         elif path == "/memes/packs/add":
             body = self._body()
             with _lock:
@@ -755,11 +767,16 @@ class Handler(BaseHTTPRequestHandler):
     # -- 人格设定（二合一里的「人」那一半） ---------------------------------
 
     def _persona_payload(self, data: dict) -> dict:
+        import persona_cards
         data = dict(data or {})
         data["user_profile"] = store.get_user_profile()
+        with _lock:
+            persona_cards.initialize(store.conn, data)
+            cards = persona_cards.read(store.conn)
         return {
             "ok": True,
             **data,
+            "persona_cards": cards,
             "chars": {
                 "constitution": len(data["constitution"]),
                 "self_model": len(data["self_model"]),
@@ -774,6 +791,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def _get_persona(self) -> None:
         self._json(200, self._persona_payload(store.get_persona()))
+
+    def _get_persona_cards(self) -> None:
+        import persona_cards
+        with _lock:
+            persona_cards.initialize(store.conn, store.get_persona())
+            result = persona_cards.read(store.conn)
+        self._json(200, result)
+
+    def _set_persona_cards(self) -> None:
+        import persona_cards
+        body = self._body()
+        with _lock:
+            persona_cards.initialize(store.conn, store.get_persona())
+            result = persona_cards.change(store.conn, body)
+        self._json(200, result)
 
     def _set_persona(self) -> None:
         """设置页保存。两半都能写；没传的字段保持原值。"""
@@ -1369,7 +1401,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- 逛 B 站（借 dsh-bili-whale 的 CLI，但人格/记忆/情绪全走我们这套） --------
 
-    BILI_DIR = os.environ.get("CMEM_BILI_DIR") or os.path.join(DSH_ROOT, "sources", "dsh-bili-whale")
+    BILI_DIR = os.environ.get("CMEM_BILI_DIR") or str(Path(__file__).resolve().parent.parent / "vendor" / "bili-whale")
     NODE_BIN = os.environ.get("CMEM_NODE_BIN") or shutil.which("node") or "node"
 
     def _run_bili(self, args: list, timeout: int = 90, output_limit: int = 4000) -> dict:
@@ -1380,7 +1412,10 @@ class Handler(BaseHTTPRequestHandler):
                 cwd=self.BILI_DIR, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
                 env={**os.environ, "NODE_USE_ENV_PROXY": "1", "NO_PROXY": "127.0.0.1,localhost,::1"},
             )
-            return {"ok": r.returncode == 0, "stdout": r.stdout[-output_limit:], "stderr": r.stderr[-1500:]}
+            from bili_runtime import parse_cli_failure
+            failure = parse_cli_failure(r.stderr)
+            return {"ok": r.returncode == 0, "stdout": r.stdout[-output_limit:], "stderr": r.stderr[-1500:],
+                    **({"failure": failure} if failure else {})}
         except Exception as e:
             return {"ok": False, "error": str(e), "stdout": "", "stderr": ""}
 
@@ -1442,6 +1477,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("path (non-empty array of strings) required")
             if "value" not in update:
                 raise ValueError("value required")
+            if path in (["risk", "writeDaily"], ["risk", "writeHourly"]):
+                value = update["value"]
+                if type(value) is not int or not 1 <= value <= 100000:
+                    raise ValueError("写操作上限必须是 1～100000 的整数")
         with BILI_CONFIG_LOCK:
             cfg = self._load_bili_whale()
             for update in updates:
@@ -2181,6 +2220,46 @@ class Handler(BaseHTTPRequestHandler):
             pass
         self._json(200, {"ok": True})
 
+    def _get_meme_delivery_status(self) -> None:
+        """最近配图结果不包含聊天正文；B 站发送限制由原控制器提供。"""
+        with _lock:
+            try:
+                data = json.loads(Path(DATA_DIR, "meme-delivery-status.json").read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                data = {}
+        if bili_automation is not None:
+            status = bili_automation.status()
+            error = status.get("dmError") or status.get("lastError")
+            if error:
+                data["bili"] = {"status": "failed", "reason": str(error)}
+        self._json(200, data)
+
+    def _set_meme_delivery_status(self) -> None:
+        """只保存每个渠道的最近一次结果，不重复发送图片。"""
+        body = self._body()
+        if not isinstance(body, dict) or body.get("channel") not in ("qq", "web", "bili") or body.get("status") not in ("sent", "skipped", "failed"):
+            raise ValueError("配图渠道或状态无效")
+        reason = body.get("reason")
+        if not isinstance(reason, str) or len(reason) > 2000:
+            raise ValueError("配图说明必须是至多 2000 字的文本")
+        path = Path(DATA_DIR, "meme-delivery-status.json")
+        with _lock:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                data = {}
+            data[body["channel"]] = {"status": body["status"], "reason": reason, "at": time.time()}
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as stream:
+                    temporary = stream.name
+                    json.dump(data, stream, ensure_ascii=False)
+                os.replace(temporary, path)
+            finally:
+                if temporary and os.path.exists(temporary):
+                    os.unlink(temporary)
+        self._json(200, {"ok": True})
+
     def _match_meme(self) -> None:
         """按场景召回并核对当前问题与拟回复；无匹配不配图。"""
         from meme_matching import select_for_reply
@@ -2191,8 +2270,9 @@ class Handler(BaseHTTPRequestHandler):
         context = body.get("context", "").strip()
         emotion = body.get("emotion", "").strip()
         with _lock:
-            candidates = store.meme_candidates(q, emotion) if q and context else []
-        self._json(200, select_for_reply(llm, candidates, q, context))
+            prefer_image = float(self._load_proactive().get("memeRate", 0.2)) == 1
+            candidates = store.meme_candidates(q, emotion, include_general=prefer_image) if q and context else []
+        self._json(200, select_for_reply(llm, candidates, q, context, prefer_image=prefer_image))
 
     def _post_meme(self) -> None:
         """表情包入库/更新。

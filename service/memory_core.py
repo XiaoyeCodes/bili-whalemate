@@ -1027,25 +1027,19 @@ class MemoryStore:
         return "发呆"
 
     def current_weather(self, ttl: float = 1800.0) -> str:
-        """拉天气（wttr.in，缓存 ttl 秒）。失败返回缓存或空串。"""
-        cur = self.get_state() if hasattr(self, "get_state") else {}
+        """Return validated Shanghai weather shared with life posts; unavailable data yields an empty string."""
+        from life_context import ShanghaiContext
         now = time.time()
-        cached = cur.get("weather", "") if cur else ""
-        updated = float(cur.get("weather_updated", 0) or 0) if cur else 0.0
-        if cached and now - updated < ttl:
-            return cached
-        try:
-            import urllib.request as _ur
-            req = _ur.Request("https://wttr.in/?format=%C+%t&lang=zh", headers={"User-Agent": "curl/7.88"})
-            with _ur.urlopen(req, timeout=6) as r:
-                text = r.read().decode("utf-8", errors="ignore").strip()
-            if text and len(text) < 60:
-                self.conn.execute("UPDATE state SET weather=?, weather_updated=? WHERE id=1", (text, now))
-                self.conn.commit()
-                return text
-        except Exception:
-            pass
-        return cached
+        with self._cache_lock:
+            if not hasattr(self, '_shanghai_weather'):
+                self._shanghai_weather = ShanghaiContext(Path(self.path).parent)
+        weather = self._shanghai_weather.weather(now, {'weatherCacheMinutes': max(5, min(120, int(ttl / 60))), 'weatherTimeoutSeconds': 6})
+        if not weather['available']:
+            return ''
+        text = f"上海 · {weather['description']} {weather['temperatureC']}°C"
+        self.conn.execute("UPDATE state SET weather=?, weather_updated=? WHERE id=1", (text, weather['observedAt']))
+        self.conn.commit()
+        return text
 
 
     # -- 日记本：每天一篇 ------------------------------------------------------
@@ -1376,11 +1370,11 @@ class MemoryStore:
             for r in rows
         ]
 
-    def meme_candidates(self, query: str, emotion: str = "") -> list[dict]:
+    def meme_candidates(self, query: str, emotion: str = "", *, include_general=False) -> list[dict]:
         """按场景排序自动回复候选；最终是否配图仍需核对当前对话。"""
         from meme_matching import rank_candidates
         rows = self.conn.execute("SELECT * FROM meme").fetchall()
-        return rank_candidates(rows, query, emotion)
+        return rank_candidates(rows, query, emotion, include_general=include_general)
 
     def _packs_file(self) -> str:
         import os as _os

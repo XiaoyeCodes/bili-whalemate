@@ -5,6 +5,19 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { configPath } from './paths.mjs'
 
 export const RISK_DEFAULTS = { minGapMs: 1500, readHourly: 600, readDaily: 3000, writeHourly: 12, writeDaily: 30, writeGapSec: 120, dmGapSec: 60 }
+const HOUR_MS = 3600000, DAY_MS = 86400000, BEIJING_OFFSET_MS = 8 * HOUR_MS
+
+/**
+ * Beijing calendar windows shared by counters and budget retry times.
+ * @param {number} timestamp - Unix time in milliseconds.
+ * @returns {{date: string, hourAt: number, hourResetsAt: number, dayResetsAt: number}} Active windows and their exclusive ends.
+ */
+export function budgetWindow(timestamp) {
+  const hourAt = Math.floor(timestamp / HOUR_MS) * HOUR_MS
+  return { date: new Date(timestamp + BEIJING_OFFSET_MS).toISOString().slice(0, 10), hourAt,
+    hourResetsAt: hourAt + HOUR_MS,
+    dayResetsAt: (Math.floor((timestamp + BEIJING_OFFSET_MS) / DAY_MS) + 1) * DAY_MS - BEIJING_OFFSET_MS }
+}
 const digest = value => crypto.createHash('sha256').update(value).digest('hex')
 export function riskSettings() {
   let cfg = {}
@@ -25,7 +38,16 @@ result.dmGapSec = Math.max(0, Number(result.dmGapSec) || 0)
   return result
 }
 const isBili = u => u.hostname === 'bilibili.com' || u.hostname.endsWith('.bilibili.com')
-export class TrafficError extends Error { constructor(message) { super(message); this.name = 'TrafficError'; this.code = 'BILI_TRAFFIC_PAUSED' } }
+export class TrafficError extends Error {
+  constructor(message, details = {}) {
+    super(message)
+    this.name = 'TrafficError'
+    this.code = 'BILI_TRAFFIC_PAUSED'
+    this.reason = 'local-protection'
+    this.submission = 'not-sent'
+    Object.assign(this, details)
+  }
+}
 
 // One state and lock per local plugin data directory, shared by CLI children and
 // the Electron host. The lock covers reservation/update only, never network I/O.
@@ -64,11 +86,11 @@ export function createTrafficGuard({ directory, transport = (...a) => globalThis
     } finally { fs.closeSync(fd); fs.unlinkSync(lockFile) }
   }
   function blocked(s, account) {
-    if (s.manual?.[account]) throw new TrafficError('账号需要人工处理登录或验证码；处理后运行 traffic resume --go')
-    if (Number(s.until ?? 0) > now()) throw new TrafficError(`请求已暂停，${new Date(s.until).toISOString()} 后再试（${s.reason ?? '平台限制'}）`)
+    if (s.manual?.[account]) throw new TrafficError('账号需要人工重新登录或完成验证码，已暂停发送', { reason: 'manual' })
+    if (Number(s.until ?? 0) > now()) throw new TrafficError('平台请求已暂停，正在等待恢复', { reason: 'platform-pause', retryAt: Number(s.until) })
     let legacy = {}
     try { legacy=JSON.parse(fs.readFileSync(path.join(directory,'api-ban.json'),'utf8')) } catch {}
-    if (Number(legacy.until??0)>now()) throw new TrafficError('已有接口风控等待尚未结束，请等待恢复')
+    if (Number(legacy.until??0)>now()) throw new TrafficError('已有接口风控等待尚未结束，请等待恢复', { reason: 'platform-pause', retryAt: Number(legacy.until) })
   }
   function identity(headers) {
     const cookie = new Headers(headers).get('cookie') ?? ''
@@ -108,17 +130,22 @@ export function createTrafficGuard({ directory, transport = (...a) => globalThis
       blocked(s, account)
       s.accounts ??= {}; s.operations ??= {}
       const a = s.accounts[account] ??= {}
-      const date = new Date(timestamp).toLocaleDateString('sv-SE')
+      const { date, hourAt, hourResetsAt, dayResetsAt } = budgetWindow(timestamp)
       if (a.date !== date) Object.assign(a, { date, readDay: 0, writeDay: 0 })
-      if (!a.hourAt || timestamp - a.hourAt >= 3600000) Object.assign(a, { hourAt: timestamp, readHour: 0, writeHour: 0 })
+      if (!a.hourAt || Math.floor(a.hourAt / HOUR_MS) * HOUR_MS !== hourAt) Object.assign(a, { readHour: 0, writeHour: 0 })
+      a.hourAt = hourAt
       for (const [key, item] of Object.entries(s.operations)) if (item.status !== 'unknown' && item.status !== 'pending' && timestamp - item.at > 86400000) delete s.operations[key]
       if (writing) {
-        if (s.operations[id]) throw new TrafficError(`相同操作已提交或结果待核查，禁止重复发送；操作 ID：${id}`)
+        if (s.operations[id]) throw new TrafficError('相同操作已提交或结果待核查，禁止重复发送', { reason: 'duplicate', submission: 'unknown', operationId: id })
         if (Object.keys(s.operations).length >= 2000) throw new TrafficError('发送记录已满，请先核查未确认操作')
         const gap = (url.pathname.endsWith('/send_msg') ? cfg.dmGapSec : cfg.writeGapSec) * 1000
-        if (a.lastWrite && timestamp - a.lastWrite < gap && !url.pathname.endsWith('/reply/del')) throw Object.assign(new TrafficError('写操作冷却中，请稍后再发送'), { cooldownMs: a.lastWrite + gap - timestamp })
-        if ((a.writeHour ?? 0) >= cfg.writeHourly || (a.writeDay ?? 0) >= cfg.writeDaily) throw new TrafficError('已达到本地写操作预算，本次不发送')
-      } else if ((a.readHour ?? 0) >= cfg.readHourly || (a.readDay ?? 0) >= cfg.readDaily) throw new TrafficError('已达到本地读取预算，请等待预算窗口恢复')
+        if (a.lastWrite && timestamp - a.lastWrite < gap && !url.pathname.endsWith('/reply/del')) throw new TrafficError('写操作冷却中，请稍后再发送', { reason: 'cooldown', cooldownMs: a.lastWrite + gap - timestamp, retryAt: a.lastWrite + gap })
+        if ((a.writeHour ?? 0) >= cfg.writeHourly || (a.writeDay ?? 0) >= cfg.writeDaily) {
+          throw new TrafficError('已达到本地写操作预算，本次不发送', { reason: 'write-budget', retryAt: Math.max((a.writeHour ?? 0) >= cfg.writeHourly ? hourResetsAt : 0, (a.writeDay ?? 0) >= cfg.writeDaily ? dayResetsAt : 0) })
+        }
+      } else if ((a.readHour ?? 0) >= cfg.readHourly || (a.readDay ?? 0) >= cfg.readDaily) {
+        throw new TrafficError('已达到本地读取预算，请等待预算窗口恢复', { reason: 'read-budget', retryAt: Math.max((a.readHour ?? 0) >= cfg.readHourly ? hourResetsAt : 0, (a.readDay ?? 0) >= cfg.readDaily ? dayResetsAt : 0) })
+      }
       const slot = Math.max(timestamp, Number(s.nextAt ?? 0))
       if (slot - timestamp > 30000) throw new TrafficError('请求队列已满，本次停止')
       s.nextAt = slot + cfg.minGapMs
@@ -186,7 +213,8 @@ export function createTrafficGuard({ directory, transport = (...a) => globalThis
       return response
     } catch (e) {
       await locked(s => { if(s.active?.token===requestToken)delete s.active; if (id) { if (!dispatched) delete s.operations[id]; else if (s.operations[id]) s.operations[id].status='unknown' } })
-      if (dispatched && writing) throw new TrafficError(`发送结果不确定，已禁止自动重发。请回读核查；操作 ID：${id}`)
+      if (dispatched && writing) throw new TrafficError('发送结果不确定，已禁止自动重发，请先核查会话', { reason: 'delivery-unknown', submission: 'unknown', operationId: id })
+      if (!writing && e instanceof Error) Object.assign(e, { submission: 'not-sent', reason: e.reason || 'read-failed' })
       throw e
     }
   }
