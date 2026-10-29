@@ -1,5 +1,9 @@
 # Validation
 
+## Settings readback, 2026-10-29
+
+The Bilibili settings browser fixture now adds backend defaults and reverses object key order after saving. The UI accepts matching submitted values, keeps array order significant and reports the exact path when a submitted value actually differs. The same browser flow deliberately changes the returned daily write limit and checks that saving remains visibly incomplete. `node test/bili-settings.browser.mjs <Harness workspace>` and `node test/test_client.mjs` passed. A previously uncertain standalone comment remained absent within the existing bounded public readback, so its receipt was retained as unknown and no additional comment was sent.
+
 ## Nested mentions, 2026-10-29
 
 The nested-mention follow-up passed 145 Bilibili Python tests and 5 focused Node tests for exact floor lookup and author checks. After extending signed-resource URL filtering to protocol-relative URLs, the 29 comment tests passed again. Read-only live inspection confirmed that an `at` notification reported a zero root for a nested comment, while the comment record identified a different root floor. The corrected author preflight passed; a single previously unsent owner reply was recovered and publicly read back. The local diagnostic confirmed that the actual draft received separate root/current comment text and available subtitle/danmaku material. Video frames and comment pictures were not analyzed.

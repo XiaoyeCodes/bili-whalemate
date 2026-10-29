@@ -53,10 +53,18 @@ try {
             for (const key of update.path.slice(0, -1)) target = target[key] ??= {};
             target[update.path.at(-1)] = update.value;
           }
+          // Configuration resolution adds defaults and need not preserve JSON key order.
+          window.saved.automation.replyThinkingEnabled ??= false;
+          const reorder = value => Array.isArray(value) ? value.map(reorder)
+            : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).reverse().map(([key, item]) => [key, reorder(item)])) : value;
+          window.saved = reorder(window.saved);
           data = window.saved;
         } else data = body;
       } else if (path === '/bili/status') data = { enabled: true, logged_in: true, owner_mid: '123', owner_name: '主人' };
-      else if (path === '/bili/cfg') data = window.saved;
+      else if (path === '/bili/cfg') {
+        data = structuredClone(window.saved);
+        if (window.wrongReadback) data.risk.writeDaily += 1;
+      }
       else if (path === '/bili/tools') data = { tools: [] };
       else if (path === '/bili/write-usage') {
         if (window.usageFailure) return new Response('{"error":"fixture unavailable"}', { status: 503 });
@@ -146,6 +154,12 @@ try {
   await page.getByRole('button', { name: '保存', exact: true }).click();
   await page.getByText(/^已保存 /).waitFor();
   assert.equal(await page.evaluate(() => window.saved.automation.actionProbability.recommend), 75);
+  await page.evaluate(() => { window.wrongReadback = true; });
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await page.getByText('保存未完成：B 站设置“risk / writeDaily”回读不一致，请重试保存', { exact: true }).waitFor();
+  await page.evaluate(() => { window.wrongReadback = false; });
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await page.getByText(/^已保存 /).waitFor();
   await page.getByText('最近执行记录', { exact: true }).click();
   const detail = page.locator('pre').filter({ hasText: 'file:///private/example.mjs' });
   assert.equal(await detail.isVisible(), false);

@@ -21,6 +21,21 @@ window.__ModuleLoader__.load({
       const React = e("react");
       const h = React.createElement;
 
+      /** Compare submitted fields after a save; backend defaults and object key order may differ. */
+      function matchesSavedSetting(actual, expected) {
+        if (actual === expected) return true;
+        if (Array.isArray(expected)) {
+          return Array.isArray(actual) && actual.length === expected.length
+            && expected.every((value, index) => matchesSavedSetting(actual[index], value));
+        }
+        if (expected && typeof expected === "object") {
+          return actual !== null && typeof actual === "object" && !Array.isArray(actual)
+            && Object.keys(expected).every(key => Object.prototype.hasOwnProperty.call(actual, key)
+              && matchesSavedSetting(actual[key], expected[key]));
+        }
+        return false;
+      }
+
       // 公网访问时不能写死 127.0.0.1（那是用户自己的电脑）——
       // 按当前页面地址推导：主套 /mem，第二套 /lan/mem（caddy 反代到 8081/8082）
       function defaultServiceUrl() {
@@ -1969,8 +1984,8 @@ window.__ModuleLoader__.load({
                 const c = await call("/bili/cfg");
                 for (const { path, value } of updates) {
                   const actual = path.reduce((obj, key) => obj && obj[key], c);
-                  if (JSON.stringify(actual) !== JSON.stringify(value)) {
-                    throw new Error("B 站设置回读不一致，请重试保存");
+                  if (!matchesSavedSetting(actual, value)) {
+                    throw new Error("B 站设置“" + path.join(" / ") + "”回读不一致，请重试保存");
                   }
                 }
                 if (biliProactive) {
