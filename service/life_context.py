@@ -14,7 +14,7 @@ SHANGHAI = dt.timezone(dt.timedelta(hours=8), 'Asia/Shanghai')
 THEMES = {'fishlife': '鱼生思考', 'philosophy': '哲学碎想', 'world': '对世界的好奇',
           'daily': '日常感慨', 'food': '饿了想吃饭', 'weather': '上海天气', 'holiday': '假期心情'}
 LIFE_DEFAULTS = {'startHour': 8, 'endHour': 23, 'minGapMinutes': 180, 'maxChars': 260,
-    'maxTokens': 1024, 'verifySeconds': 45, 'verifyPollSeconds': 5, 'weatherTimeoutSeconds': 10, 'weatherCacheMinutes': 30,
+    'maxTokens': 1024, 'experienceMaxItems': 24, 'chatMaxChars': 6000, 'verifySeconds': 45, 'verifyPollSeconds': 5, 'weatherTimeoutSeconds': 10, 'weatherCacheMinutes': 30,
     'weatherMaxAgeMinutes': 120, 'recentPosts': 8, 'duplicateSimilarity': 0.9,
     'themes': list(THEMES), 'prompt': '围绕选中的主题，用当前人物卡的口吻写一到三句自然的日常动态，不写工作汇报。', 'allowMemes': True}
 HOLIDAYS = {'New Year\'s Day': '元旦', 'Spring Festival': '春节', 'Tomb-sweeping Day': '清明节',
@@ -33,8 +33,9 @@ def validate_life(value):
         raise ValueError('碎碎念设置包含未知字段或不是对象')
     cfg = {**LIFE_DEFAULTS, **value}
     bounds = {'startHour': (0, 23), 'endHour': (1, 24), 'minGapMinutes': (10, 1440),
-        'maxChars': (40, 500), 'maxTokens': (300, 4096), 'verifySeconds': (0, 180), 'verifyPollSeconds': (1, 30), 'weatherTimeoutSeconds': (3, 30),
+        'maxChars': (40, 2000), 'maxTokens': (300, 4096), 'verifySeconds': (0, 180), 'verifyPollSeconds': (1, 30), 'weatherTimeoutSeconds': (3, 30),
         'weatherCacheMinutes': (5, 180), 'weatherMaxAgeMinutes': (30, 360), 'recentPosts': (1, 30)}
+    bounds.update(experienceMaxItems=(1, 100), chatMaxChars=(500, 20000))
     for key, (low, high) in bounds.items():
         if type(cfg[key]) is not int or not low <= cfg[key] <= high:
             raise ValueError(f'碎碎念 {key} 必须是 {low}–{high} 的整数')

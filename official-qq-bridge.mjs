@@ -124,7 +124,7 @@ export class OfficialQqBridge {
     }
     if (req.method === "GET" && req.url === "/status") {
       return this.respond(res, 200, { ok: true, ready: this.ready, ownerBound: !!this.config.ownerOpenId, memeAutoReady: !!this.memeAuto, textStyleReady: !!this.replyStyle,
-        busy: this.busy, jobs: [...this.jobs.values()], lastNotification: this.lastNotification, lastReply: this.lastReply });
+        busy: this.busy, ownerSessionId: this.config.ownerOpenId ? this.manager.getSessionRecord?.('c2c', this.config.ownerOpenId)?.sessionId : undefined, jobs: [...this.jobs.values()], lastNotification: this.lastNotification, lastReply: this.lastReply });
     }
     if (req.method !== "POST" || !["/wake", "/notify"].includes(req.url)) {
       return this.respond(res, 404, { ok: false, error: "not found" });

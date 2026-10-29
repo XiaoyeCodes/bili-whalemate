@@ -1765,11 +1765,11 @@ window.__ModuleLoader__.load({
           value.lifePosts ? h("details", { "data-life-post-settings": "" },
             h("summary", { style: { ...S.label, cursor: "pointer" } }, "碎碎念主题、时段与偏好"),
             h("div", { style: { display: "flex", flexDirection: "column", gap: 12, marginTop: 12 } },
-              h("div", { style: S.muted }, "使用上海当天的天气与中国法定节假日资料，区分放假和调休上班；天气取不到时换其他主题，不编造实况。发表时间随机安排，刷新与重启不会重新抽取。"),
+              h("div", { style: S.muted }, "结合上海当天的天气、节假日、已完成的视频浏览与评论互动，以及主人聊天的话题和感受，按下方写作提示词生成当天日记或碎碎念。勾选主题可灵活结合；聊天仅提炼感受，不公开私聊原文。暂无记录时不编造经历。发表时间随机安排，刷新与重启不会重新抽取。"),
               check("动态允许带图库表情包", ["lifePosts", "allowMemes"], "复用 QQ 与 B 站现有图库和表情包概率；图片不符合当前语境时只发文字"),
               h("div", { style: { ...S.row, flexWrap: "wrap" } },
                 number("碎碎念开始时刻", ["lifePosts", "startHour"], 0, 23), number("碎碎念结束时刻", ["lifePosts", "endHour"], 1, 24),
-                number("碎碎念最短间隔（分钟）", ["lifePosts", "minGapMinutes"], 10, 1440), number("碎碎念最多字数", ["lifePosts", "maxChars"], 40, 500)),
+                number("碎碎念最短间隔（分钟）", ["lifePosts", "minGapMinutes"], 10, 1440), number("碎碎念最多字数", ["lifePosts", "maxChars"], 40, 2000)),
               h("div", { style: { display: "flex", flexWrap: "wrap", gap: 14 } },
                 ...Object.entries({ fishlife: "鱼生思考", philosophy: "哲学碎想", world: "对世界的好奇", daily: "日常感慨", food: "饿了想吃饭", weather: "上海天气", holiday: "假期与调休心情" }).map(([key, label]) =>
                   h("label", { key, style: { display: "flex", gap: 6, alignItems: "center" } },

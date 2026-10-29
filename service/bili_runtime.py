@@ -394,7 +394,10 @@ class BiliRuntime:
         for name in names:
             if name:
                 text = text.replace("@" + name, name).replace("＠" + name, name)
-        return self.publish(kind, context, {kind: text, "meme_file": filename}, cfg)
+        result = self.publish(kind, context, {kind: text, "meme_file": filename}, cfg)
+        if result.get('status') == 'success':
+            result.update(incomingText=context.get('text', ''), threadText=context.get('threadText', ''))
+        return result
 
     @staticmethod
     def _failure(result, submitted):
@@ -609,6 +612,11 @@ class BiliRuntime:
         if self.life is None:
             self.life = LifePosts(self)
         return self.life.draft(cfg, now, recent)
+
+    def daily_experiences(self, now, settings):
+        """Collect confirmed daily records only when a reflection is generated."""
+        from daily_experiences import collect
+        return collect(self, now, settings)
 
     def publish_dynamic(self, draft, cfg):
         """Reuse the existing dynamic CLI; an accepted but unverified post is never retried."""
