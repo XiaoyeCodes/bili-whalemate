@@ -1708,7 +1708,7 @@ window.__ModuleLoader__.load({
           h("span", null, h("span", { style: S.label }, text), hint ? h("div", { style: S.muted }, hint) : null));
         const number = (label, path, min, max) => h("label", { style: { display: "flex", alignItems: "center", gap: 6 } },
           h("span", { style: S.muted }, label), h("input", { type: "number", min, max, step: 1,
-            required: true, "aria-label": label, title: `请输入 ${min}～${max} 的整数`,
+            required: true, "aria-label": label, title: max === undefined ? "请输入正整数" : `请输入 ${min}～${max} 的整数`,
             style: { ...S.input, width: 86 }, value: path.reduce((o, k) => o[k], value),
             onChange: ev => change(path, ev.target.value === "" ? "" : Number(ev.target.value)) }));
         const diagnostic = (text, unknown = false) => {
@@ -1769,7 +1769,7 @@ window.__ModuleLoader__.load({
               check("动态允许带图库表情包", ["lifePosts", "allowMemes"], "复用 QQ 与 B 站现有图库和表情包概率；图片不符合当前语境时只发文字"),
               h("div", { style: { ...S.row, flexWrap: "wrap" } },
                 number("碎碎念开始时刻", ["lifePosts", "startHour"], 0, 23), number("碎碎念结束时刻", ["lifePosts", "endHour"], 1, 24),
-                number("碎碎念最短间隔（分钟）", ["lifePosts", "minGapMinutes"], 10, 1440), number("碎碎念最多字数", ["lifePosts", "maxChars"], 40, 2000)),
+                number("碎碎念最短间隔（分钟）", ["lifePosts", "minGapMinutes"], 10, 1440), number("碎碎念最多字数", ["lifePosts", "maxChars"], 1, undefined)),
               h("div", { style: { display: "flex", flexWrap: "wrap", gap: 14 } },
                 ...Object.entries({ fishlife: "鱼生思考", philosophy: "哲学碎想", world: "对世界的好奇", daily: "日常感慨", food: "饿了想吃饭", weather: "上海天气", holiday: "假期与调休心情" }).map(([key, label]) =>
                   h("label", { key, style: { display: "flex", gap: 6, alignItems: "center" } },

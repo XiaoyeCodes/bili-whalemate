@@ -14,6 +14,13 @@ def stamp(text):
 
 
 class ContextTest(unittest.TestCase):
+    def test_diary_length_accepts_user_limits_outside_the_old_range(self):
+        for value in (1, 39, 700, 3000, 10000):
+            self.assertEqual(validate_life({'maxChars': value})['maxChars'], value)
+        for value in (0, -1, True, 1.5, '700'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                validate_life({'maxChars': value})
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(); self.addCleanup(self.temp.cleanup)
         self.now = stamp('2026-10-28T12:00:00')

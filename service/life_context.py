@@ -33,9 +33,11 @@ def validate_life(value):
         raise ValueError('碎碎念设置包含未知字段或不是对象')
     cfg = {**LIFE_DEFAULTS, **value}
     bounds = {'startHour': (0, 23), 'endHour': (1, 24), 'minGapMinutes': (10, 1440),
-        'maxChars': (40, 2000), 'maxTokens': (300, 4096), 'verifySeconds': (0, 180), 'verifyPollSeconds': (1, 30), 'weatherTimeoutSeconds': (3, 30),
+        'maxTokens': (300, 4096), 'verifySeconds': (0, 180), 'verifyPollSeconds': (1, 30), 'weatherTimeoutSeconds': (3, 30),
         'weatherCacheMinutes': (5, 180), 'weatherMaxAgeMinutes': (30, 360), 'recentPosts': (1, 30)}
     bounds.update(experienceMaxItems=(1, 100), chatMaxChars=(500, 20000))
+    if type(cfg['maxChars']) is not int or cfg['maxChars'] < 1:
+        raise ValueError('碎碎念最多字数必须是正整数')
     for key, (low, high) in bounds.items():
         if type(cfg[key]) is not int or not low <= cfg[key] <= high:
             raise ValueError(f'碎碎念 {key} 必须是 {low}–{high} 的整数')
