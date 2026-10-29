@@ -1,5 +1,9 @@
 # Validation
 
+## Nested mentions, 2026-10-29
+
+The nested-mention follow-up passed 145 Bilibili Python tests and 5 focused Node tests for exact floor lookup and author checks. After extending signed-resource URL filtering to protocol-relative URLs, the 29 comment tests passed again. Read-only live inspection confirmed that an `at` notification reported a zero root for a nested comment, while the comment record identified a different root floor. The corrected author preflight passed; a single previously unsent owner reply was recovered and publicly read back. The local diagnostic confirmed that the actual draft received separate root/current comment text and available subtitle/danmaku material. Video frames and comment pictures were not analyzed.
+
 ## Comment recovery follow-up, 2026-10-29
 
 The merged source passed 84 Node tests (`node --test test/*.test.mjs vendor/bili-whale/tests/*.test.mjs` with `WHALEMATE_TEST_PYTHON` configured), 192 Python service tests with `-X utf8`, and 8 setup tests. The comment retry regression covers persisted drafts, restart, midnight, exhausted AI quota, fixed notices, feature changes, owner changes and unknown delivery. On the running installation, the previously unsent owner comment was recovered once and publicly read back; this is separate from the isolated tests and did not send test messages to strangers. See [delivery behavior](comment-delivery-fix.md).

@@ -65,10 +65,15 @@ try {
     const bvid = view.data.bvid;
     const row = await findComment(aid, bvid, rootId, parent);
     if (!row || String(row.mid || row.member?.mid) !== actor) throw Error('通知楼层或发送人未通过公开回读验证');
-    const root = rootId === parent ? row : await findComment(aid, bvid, rootId, rootId);
-    console.log(JSON.stringify({ ok: true, aid, bvid, title: view.data.title, root: rootId, parent_rpid: parent,
+    const resolvedRoot = String(row.root_str ?? row.root ?? rootId);
+    if (!/^\d+$/.test(resolvedRoot)) throw Error('评论实际根楼层无效');
+    const threadRoot = resolvedRoot === '0' ? parent : resolvedRoot;
+    const root = threadRoot === parent ? row : await findComment(aid, bvid, threadRoot, threadRoot);
+    if (!root) throw Error('评论根楼层未通过公开回读验证');
+    console.log(JSON.stringify({ ok: true, aid, bvid, title: view.data.title, root: threadRoot, parent_rpid: parent,
       actorUid: actor, actorName: row.member?.uname || '', text: String(row.content?.message || ''),
-      threadText: String(root?.content?.message || '') }));
+      threadText: String(root.content?.message || ''), threadAuthor: root.member?.uname || '',
+      threadHasPictures: (root.content?.pictures || []).length > 0 }));
   } else if (mode === 'write-ready') {
     const { trafficGuard, riskSettings } = await load('traffic.mjs');
     const state = trafficGuard().status(), settings = riskSettings();

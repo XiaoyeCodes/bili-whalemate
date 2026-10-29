@@ -42,19 +42,21 @@ const loadReplied = () => { try { return JSON.parse(fs.readFileSync(REPLIED, 'ut
 const saveReplied = (o) => { try { fs.mkdirSync(path.dirname(REPLIED), { recursive: true }); fs.writeFileSync(REPLIED, JSON.stringify(o, null, 2) + '\n') } catch {} }
 // 查出"被回复的那个人"是谁（reply/reply 里 rpid === parent 的那条的作者）
 async function parentAuthor(aid, rootRpid, parentRpid, replyType) {
-  for (let pn = 1; pn <= 4; pn += 1) {
+  // Match the notification context reader's five-page public lookup.
+  for (let pn = 1; pn <= 5; pn += 1) {
     const j = await exactJson(await fetch(`https://api.bilibili.com/x/v2/reply/reply?type=${replyType}&oid=${aid}&root=${rootRpid}&pn=${pn}&ps=20`, {
       headers: { 'user-agent': 'Mozilla/5.0', referer: 'https://www.bilibili.com/' },
     }))
+    if (j.code !== 0) throw new Error(`评论作者回读失败 code=${j.code}`)
     const list = j.data?.replies ?? []
-    const hit = list.find((r) => String(r.rpid) === String(parentRpid))
+    const hit = list.find((r) => String(r.rpid_str ?? r.rpid) === String(parentRpid))
     if (hit) return { mid: String(hit.mid ?? hit.member?.mid ?? ''), name: hit.member?.uname ?? '' }
     // 2026-10-22 修（她自己诊断的，很准）：
     //   我们要回的可能是一个【顶层评论】—— 那时 root == parent，
     //   它根本不在楼中楼列表 replies 里 → 永远查不到 → fail-closed ✗
     //   但同一个响应里就带着 data.root（就是那条顶层评论本身）✓ 直接用它 ✓
     const rt = j.data?.root
-    if (rt && String(rt.rpid) === String(parentRpid)) {
+    if (rt && String(rt.rpid_str ?? rt.rpid) === String(parentRpid)) {
       return { mid: String(rt.mid ?? rt.member?.mid ?? ''), name: rt.member?.uname ?? '' }
     }
     if (!list.length) break

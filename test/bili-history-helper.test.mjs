@@ -64,3 +64,19 @@ test('dynamic verification matches both ID and logged-in author and reads opus i
   modules['bili-api.mjs'] = `export const apiGet=async url=>url.includes('/nav')?{code:0,data:{isLogin:true,mid:321,uname:'鱼'}}:{code:0,data:{item:${JSON.stringify(fixture)}}};`;
   assert.equal(runHelper(modules, ['verify-dynamic', '456']).found, false);
 });
+
+test('a nested mention with a zero notification root uses the comment actual root and original floor text', () => {
+  const modules = {
+    'config.mjs': 'export const config=()=>({});',
+    'cred.mjs': 'export const loadCred=()=>({sessdata:"fixture",bili_jct:"fixture",buvid3:"fixture"});',
+    'bili-api.mjs': `export const apiGet=async url=>url.includes('/view?')?{code:0,data:{bvid:'BV1JKDbBzETH',title:'视频标题'}}:{code:0,data:{root:{rpid_str:'100',root:0,mid:'555',member:{uname:'楼主'},content:{message:'肥鱼来',pictures:[{img_src:'https://example.test/rice.png'}]}},replies:[{rpid_str:'200',root_str:'100',mid:'999',content:{message:'你的饭来了，快去吃'}}]}};`,
+  };
+  const result = runHelper(modules, ['notification-context', '111', '200', '200', '999']);
+  assert.equal(result.ok, true);
+  assert.equal(result.root, '100');
+  assert.equal(result.parent_rpid, '200');
+  assert.equal(result.threadText, '肥鱼来');
+  assert.equal(result.text, '你的饭来了，快去吃');
+  assert.equal(result.threadAuthor, '楼主');
+  assert.equal(result.threadHasPictures, true);
+});

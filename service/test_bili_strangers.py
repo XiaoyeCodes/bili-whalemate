@@ -1,6 +1,7 @@
 """Inbound comment quotas and fixed replies without platform or model calls."""
 import copy
 import tempfile
+import json
 import unittest
 from pathlib import Path
 from unittest.mock import Mock
@@ -305,6 +306,33 @@ class StrangerRuntimeTest(unittest.TestCase):
         for value in (-1, 1.5, True, 501):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 validate_config({"strangerDailyMax": value})
+
+    def test_comment_draft_receives_video_root_and_current_message_separately(self):
+        self.handler._bili_tools_cfg.return_value['video-content'] = True
+        self.runtime.command = Mock(return_value={'ok': True, 'stdout': '字幕：给鱼喂饭 https://cdn.test/sub?auth_key=private //cdn.test/sub?auth_key=private'})
+        self.model.chat.return_value = '饭碗拿好了'
+        context = {'bvid': 'BV1JKDbBzETH', 'threadText': '楼主喊肥鱼来', 'text': '主人喊吃饭'}
+        self.runtime.draft_owner_comment(context, self.cfg)
+        self.runtime.command.assert_called_once_with(['video', 'BV1JKDbBzETH'], self.cfg)
+        supplied = json.loads(self.model.chat.call_args.args[1])
+        self.assertTrue(supplied['videoMaterial']['available'])
+        self.assertIn('字幕：给鱼喂饭', supplied['videoMaterial']['text'])
+        self.assertNotIn('auth_key', supplied['videoMaterial']['text'])
+        self.assertEqual(supplied['threadText'], context['threadText'])
+        self.assertEqual(supplied['text'], context['text'])
+        self.assertNotIn('videoMaterial', context)
+
+    def test_video_read_failure_or_disabled_tool_does_not_discard_the_comment(self):
+        context = {'bvid': 'BV1JKDbBzETH', 'text': '你好'}
+        self.model.chat.return_value = '你好呀'
+        self.runtime.command = Mock()
+        self.runtime.draft_stranger(context, self.cfg)
+        self.runtime.command.assert_not_called()
+        self.assertFalse(json.loads(self.model.chat.call_args.args[1])['videoMaterial']['available'])
+        self.handler._bili_tools_cfg.return_value['video-content'] = True
+        self.runtime.command.side_effect = TimeoutError('network offline')
+        self.assertEqual(self.runtime.draft_stranger(context, self.cfg), '你好呀')
+        self.assertFalse(json.loads(self.model.chat.call_args.args[1])['videoMaterial']['available'])
 
 
 if __name__ == "__main__":
