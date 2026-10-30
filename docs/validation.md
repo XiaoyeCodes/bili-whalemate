@@ -1,5 +1,9 @@
 # Validation
 
+## Reply topic selection, 2026-10-30
+
+147 focused Bilibili Python tests passed after routing comment replies by the current message's intent. Tests verify that ordinary conversation neither fetches nor receives video metadata/materials, malformed intent decisions stop drafting, gallery restrictions remain active, and video requests still receive bounded materials. Five isolated real-model previews used the active character card: three social messages stayed on topic without video references, while two explicit video questions selected video discussion. The video material in these previews was a labeled fixture; no test comment was published.
+
 ## Settings readback, 2026-10-29
 
 The Bilibili settings browser fixture now adds backend defaults and reverses object key order after saving. The UI accepts matching submitted values, keeps array order significant and reports the exact path when a submitted value actually differs. The same browser flow deliberately changes the returned daily write limit and checks that saving remains visibly incomplete. `node test/bili-settings.browser.mjs <Harness workspace>` and `node test/test_client.mjs` passed. A previously uncertain standalone comment remained absent within the existing bounded public readback, so its receipt was retained as unknown and no additional comment was sent.

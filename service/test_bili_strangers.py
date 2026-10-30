@@ -273,6 +273,7 @@ class StrangerRuntimeTest(unittest.TestCase):
         self.model = Mock()
         self.runtime = BiliRuntime(lambda: self.handler, lambda: self.model,
             lambda: {"identity": "大肥鱼", "user_profile": "secret-owner-profile"}, ".", ".")
+        self.model.chat_json.return_value = {'needs_video': False}
 
     def test_nested_reply_keeps_root_and_parent_distinct_and_fixed_text_skips_llm(self):
         self.runtime.command = Mock(side_effect=[{"ok": True}, {"ok": True, "combined": "rpid=789"}])
@@ -308,10 +309,11 @@ class StrangerRuntimeTest(unittest.TestCase):
                 validate_config({"strangerDailyMax": value})
 
     def test_comment_draft_receives_video_root_and_current_message_separately(self):
+        self.model.chat_json.return_value = {'needs_video': True}
         self.handler._bili_tools_cfg.return_value['video-content'] = True
         self.runtime.command = Mock(return_value={'ok': True, 'stdout': '字幕：给鱼喂饭 https://cdn.test/sub?auth_key=private //cdn.test/sub?auth_key=private'})
         self.model.chat.return_value = '饭碗拿好了'
-        context = {'bvid': 'BV1JKDbBzETH', 'threadText': '楼主喊肥鱼来', 'text': '主人喊吃饭'}
+        context = {'bvid': 'BV1JKDbBzETH', 'threadText': '楼主讨论怎么给鱼喂饭', 'text': '视频里怎么给鱼喂饭'}
         self.runtime.draft_owner_comment(context, self.cfg)
         self.runtime.command.assert_called_once_with(['video', 'BV1JKDbBzETH'], self.cfg)
         supplied = json.loads(self.model.chat.call_args.args[1])
@@ -323,6 +325,7 @@ class StrangerRuntimeTest(unittest.TestCase):
         self.assertNotIn('videoMaterial', context)
 
     def test_video_read_failure_or_disabled_tool_does_not_discard_the_comment(self):
+        self.model.chat_json.return_value = {'needs_video': True}
         context = {'bvid': 'BV1JKDbBzETH', 'text': '你好'}
         self.model.chat.return_value = '你好呀'
         self.runtime.command = Mock()
@@ -333,6 +336,28 @@ class StrangerRuntimeTest(unittest.TestCase):
         self.runtime.command.side_effect = TimeoutError('network offline')
         self.assertEqual(self.runtime.draft_stranger(context, self.cfg), '你好呀')
         self.assertFalse(json.loads(self.model.chat.call_args.args[1])['videoMaterial']['available'])
+
+    def test_social_reply_does_not_receive_unrelated_root_or_video_even_if_supplied(self):
+        self.runtime.command = Mock(side_effect=AssertionError('social reply must not fetch video'))
+        self.model.chat.return_value = '诶嘿，被夸得有点不好意思了。'
+        context = {'text': '鲸鱼可爱捏', 'title': '视频标题', 'bvid': 'BV1JKDbBzETH',
+                   'threadText': '二创才是护城河', 'videoMaterial': {'text': '六年历史'}}
+        self.runtime.draft_stranger(context, self.cfg)
+        supplied = json.loads(self.model.chat.call_args.args[1])
+        self.assertEqual(supplied['replyMode'], 'conversation')
+        for key in ('title', 'bvid', 'threadText', 'videoMaterial'):
+            self.assertNotIn(key, supplied)
+        self.runtime.command.assert_not_called()
+        self.assertEqual(context['title'], '视频标题')
+        self.assertIn('不适用人物卡中', self.model.chat.call_args.args[0])
+
+    def test_invalid_intent_decision_prevents_generation_and_video_fetch(self):
+        self.model.chat_json.return_value = {'needs_video': 'false'}
+        self.runtime.command = Mock()
+        with self.assertRaisesRegex(ValueError, '话题判断'):
+            self.runtime.draft_stranger({'text': '你好'}, self.cfg)
+        self.model.chat.assert_not_called()
+        self.runtime.command.assert_not_called()
 
 
 if __name__ == "__main__":

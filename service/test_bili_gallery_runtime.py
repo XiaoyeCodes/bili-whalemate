@@ -33,7 +33,7 @@ class GalleryRuntimeTest(unittest.TestCase):
         self.gallery.offer.assert_called_once_with(0.2, query="  你好 ")
 
     def test_stranger_thread_draft_does_not_offer_gallery_images(self):
-        self.model.chat_json.return_value = {"text": "你好呀", "meme_file": None}
+        self.model.chat_json.side_effect = [{'needs_video': False}, {"text": "你好呀", "meme_file": None}]
         draft = self.runtime.draft_stranger({"text": "你好"}, self.cfg)
         self.assertIsNone(draft["meme_file"])
         self.gallery.offer.assert_not_called()
@@ -41,7 +41,7 @@ class GalleryRuntimeTest(unittest.TestCase):
 
     def test_reply_thinking_can_be_enabled_by_saved_configuration(self):
         self.cfg["replyThinkingEnabled"] = True
-        self.model.chat_json.return_value = {"text": "你好", "meme_file": None}
+        self.model.chat_json.side_effect = [{'needs_video': False}, {"text": "你好", "meme_file": None}]
         self.runtime.draft_stranger({"text": "你好"}, self.cfg)
         self.assertTrue(self.model.chat_json.call_args.kwargs["thinking"])
 
@@ -71,7 +71,7 @@ class GalleryRuntimeTest(unittest.TestCase):
         self.assertEqual(self.runtime.publish.call_args.args[2]["ownerReply"], "老大 你好")
 
     def test_invented_filename_prevents_dispatch(self):
-        self.model.chat_json.return_value = {"text": "你好", "meme_file": "../../other.png"}
+        self.model.chat_json.side_effect = [{'needs_video': False}, {"text": "你好", "meme_file": "../../other.png"}]
         with self.assertRaises(ValueError):
             self.runtime.draft_stranger({}, self.cfg)
         self.gallery.prepare.assert_not_called()
