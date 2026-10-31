@@ -1,37 +1,43 @@
-import { guardedFetch as fetch } from '../lib/traffic.mjs'
-// 先确认"这串 cookie 是哪个号"——任何写操作之前都该跑一次。
-import fs from 'node:fs'
-import path from 'node:path'
+import { guardedFetch as fetch, trafficGuard } from '../lib/traffic.mjs'
+import { loadCred, CRED_PATH } from '../lib/cred.mjs'
+import { createHash } from 'node:crypto'
 
-const credPath = path.join((process.env.USERPROFILE || process.env.HOME || '/'), '.bili-ai', 'credentials.json')
-if (!fs.existsSync(credPath)) {
-  console.error(`缺少凭据文件: ${credPath}`)
-  console.error('内容应为 {"sessdata":"…","bili_jct":"…","buvid3":"…"}（见 README「凭据」一节）')
-  process.exit(3)
+const json=process.argv.includes('--json')
+let result,account
+try {
+  const cred=loadCred()
+  if(!cred.sessdata)throw Object.assign(Error(),{reason:'invalid-credentials'})
+  const accountKey=createHash('sha256').update(cred.sessdata).digest('hex')
+  const previous=trafficGuard().status().manual?.[accountKey]
+  if(previous)throw Object.assign(Error(),{reason:[-101,401].includes(previous.code)?'platform-authentication':'manual'})
+  const response=await fetch('https://api.bilibili.com/x/web-interface/nav',{
+    headers:{'user-agent':'Mozilla/5.0',referer:'https://www.bilibili.com/',
+      cookie:`SESSDATA=${cred.sessdata}; bili_jct=${cred.bili_jct}; buvid3=${cred.buvid3}`},
+    signal:AbortSignal.timeout(20000),
+  })
+  const nav=await response.json()
+  if(Number(nav.code)===-101||response.status===401||(nav.code===0&&nav.data?.isLogin===false)){
+    result={state:'expired',reason:'platform-authentication'}
+  }else if(response.ok&&nav.code===0&&nav.data?.isLogin===true){
+    result={state:'authenticated'}
+    account=nav.data
+  }else{
+    result={state:'unavailable',reason:[412,429].includes(response.status)||[-412,-352].includes(Number(nav.code))?'platform-pause':'verification-failed'}
+  }
+}catch(error){
+  result={state:error.reason==='platform-authentication'?'expired':'unavailable',reason:error.reason??'network'}
+  if(Number.isFinite(error.retryAt))result.retryAt=error.retryAt
 }
-const cred = JSON.parse(fs.readFileSync(credPath, 'utf8'))
-// 2026-10-21：buvid3 改为可选（缺了不该拦住任何事 ✗）
-const missing = ['sessdata', 'bili_jct'].filter((k) => !cred[k] || String(cred[k]).trim() === '')
-if (missing.length) {
-  console.error(`凭据文件里这些项是空的: ${missing.join(', ')}`)
-  process.exit(3)
+if(json){
+  console.log(JSON.stringify(result))
+}else if(result.state==='authenticated'){
+  console.log('凭据有效 ✓')
+  console.log(`  账号      : ${account.uname}`)
+  console.log(`  mid       : ${account.mid}`)
+  console.log(`  手机绑定  : ${account.mobile_verified?'是（发评论/动态需要）':'否'}`)
+  console.log(`  硬币      : ${account.money}   等级: ${account.level_info?.current_level??'-'}`)
+  console.log(`  凭据文件  : ${CRED_PATH}`)
+}else{
+  console.error(result.state==='expired'?'平台确认登录已失效，请重新登录。':'暂时无法验证登录；已保存的凭据未被清除，请稍后重试。')
+  process.exitCode=result.state==='expired'?4:3
 }
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-const nav = await (await fetch('https://api.bilibili.com/x/web-interface/nav', {
-  headers: {
-    'user-agent': UA,
-    referer: 'https://www.bilibili.com/',
-    cookie: `SESSDATA=${cred.sessdata}; bili_jct=${cred.bili_jct}; buvid3=${cred.buvid3}`,
-  },
-})).json()
-if (nav.code !== 0) {
-  console.error(`登录态无效: code=${nav.code} ${nav.message}（cookie 过期或抄错，重新复制一次）`)
-  process.exit(4)
-}
-console.log('凭据有效 ✓')
-console.log(`  账号      : ${nav.data.uname}`)
-console.log(`  mid       : ${nav.data.mid}`)
-console.log(`  手机绑定  : ${nav.data.mobile_verified ? '是（发评论/动态需要）' : '否 ← 会被拒'}`)
-console.log(`  硬币      : ${nav.data.money}   等级: ${nav.data.level_info?.current_level ?? '-'}`)
-console.log(`  凭据文件  : ${credPath}`)
-console.log('\n⚠️ 确认这就是你要用来操作的那个号；若显示的是主号，请换成小号再继续。')

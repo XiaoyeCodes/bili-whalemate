@@ -315,7 +315,7 @@ console.log('  content-type: application/x-www-form-urlencoded')
 console.log('  headers: UA(Chrome 131) + referer=' + referer)
 console.log('  cookie : SESSDATA=***; bili_jct=***; buvid3=***   (已脱敏)')
 console.log('  body   : ' + body.replace(encodeURIComponent(String(cred.bili_jct)), '***csrf***'))
-console.log(`  正文长度 ${message.length} 字符（上限 1000）；oid=${oid}；可附图库图片`)
+console.log(`  正文长度 ${message.length} 字符；oid=${oid}；可附图库图片`)
 
 // 闸门：自主发言（--auto）或分享型（--share）才拦；主人授权的发言只显示额度
 {

@@ -1821,6 +1821,7 @@ window.__ModuleLoader__.load({
               number("每轮最多处理陌生人消息", ["strangerBatchSize"], 1, 20),
               check("推荐后也通知主人 QQ", ["notifyQq"]), number("值得推荐的最低评分（0–20）", ["minInterestingScore"], 0, 20))),
           status && status.day ? h("div", { style: S.muted }, "计划日期：" + status.day + (status.nextBrowseAt ? " · 下次浏览：" + new Date(status.nextBrowseAt * 1000).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai" }) : "")) : null,
+          status && status.effectivePolling ? h("div", { style: S.muted }, "实际检查间隔：私信 " + status.effectivePolling.dmPollSeconds + " 秒 · 评论 " + status.effectivePolling.strangerPollSeconds + " 秒（按读取预算安排）") : null,
           status && status.blocked ? h("div", { style: S.notice("error") }, "平台限制，已暂停发布：" + status.blocked) : null,
           status && status.lastError ? h("div", { style: S.notice("error") }, status.lastError) : null,
           status && status.dmError ? h("div", { style: S.notice("error") }, "私信：" + status.dmError) : null,
@@ -1916,6 +1917,7 @@ window.__ModuleLoader__.load({
           void load();
           let disposed = false;
           let usagePending = false;
+          let lastLoginRefresh = Date.now();
           const usageController = new AbortController();
           const refreshUsage = async () => {
             if (usagePending || disposed) return;
@@ -1932,6 +1934,10 @@ window.__ModuleLoader__.load({
           refreshUsage();
           const timer = setInterval(() => {
             refreshUsage();
+            if (Date.now() - lastLoginRefresh >= 60000) {
+              lastLoginRefresh = Date.now();
+              void call("/bili/status").then(result => { if (!disposed) setSt(result); }).catch(() => {});
+            }
             void call("/bili/automation").then(result => { if (!disposed) setAutomationStatus(result); })
               .catch(error => { if (!disposed) setErr("读取自动活动状态失败：" + error.message); });
           }, 10000);
@@ -2164,6 +2170,12 @@ window.__ModuleLoader__.load({
             err ? h("div", { style: S.notice("error") }, "读取失败：" + err) : h("div", { style: S.muted }, "读取中…"));
         }
 
+        const loginState = st.login_state || (st.logged_in ? "authenticated" : "missing");
+        const loginRequired = ["missing", "invalid", "expired"].includes(loginState);
+        const loginLabel = loginState === "authenticated" ? "已登录 ✓"
+          : loginState === "unavailable" ? "登录凭据已保存，暂时无法验证"
+          : loginState === "expired" ? "登录已失效，请重新扫码" : "未登录（只能刷公开热门）";
+
         return h("fieldset", { ref: sectionRef, className: "dsh-remembers-settings", disabled: busy, style: { ...S.wrap, minWidth: 0, border: 0, margin: 0 } },
           h("div", { style: { ...S.footer, position: "sticky", top: 0, zIndex: 2, background: "var(--dsw-alias-bg-layer-1)", padding: "8px 0" } },
             savedAt ? h("span", { style: S.muted }, "已保存 " + savedAt) : null,
@@ -2177,12 +2189,13 @@ window.__ModuleLoader__.load({
           h("div", { style: S.card },
             h("div", { style: S.row },
               h("span", { style: { fontSize: 13, fontWeight: 500 } }, "账号："),
-              h("span", { style: S.muted }, st.logged_in ? "已登录 ✓" : "未登录（只能刷公开热门）"),
+              h("span", { style: S.muted }, loginLabel),
             ),
             h("div", { style: { ...S.desc, fontSize: 12 } },
-              st.logged_in ? "已登录，可以刷她自己的推荐了。" : "填 SESSDATA 登录（浏览器 F12 → Application → Cookies → bilibili.com 里复制）。",
+              loginState === "unavailable" ? (st.login_warning || "登录凭据仍已保存，稍后自动验证。")
+                : st.logged_in ? "已登录，可以刷她自己的推荐了。" : "扫码登录后会保存本机凭据，重启服务不需要重新扫码。",
             ),
-            !st.logged_in ? h("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginTop: 6 } },
+            loginRequired ? h("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginTop: 6 } },
               h("div", { style: S.row },
                 h("button", { style: S.btn(true), onClick: () => void startQr(), disabled: busy }, "扫码登录"),
                 qrState ? h("span", { style: S.muted }, qrState) : null,

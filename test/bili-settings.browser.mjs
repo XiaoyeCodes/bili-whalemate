@@ -60,7 +60,7 @@ try {
           window.saved = reorder(window.saved);
           data = window.saved;
         } else data = body;
-      } else if (path === '/bili/status') data = { enabled: true, logged_in: true, owner_mid: '123', owner_name: '主人' };
+      } else if (path === '/bili/status') data = { enabled: true, logged_in: true, owner_mid: '123', owner_name: '主人', ...window.authStatus };
       else if (path === '/bili/cfg') {
         data = structuredClone(window.saved);
         if (window.wrongReadback) data.risk.writeDaily += 1;
@@ -166,6 +166,17 @@ try {
   await page.getByText('技术详情', { exact: true }).click();
   assert.equal(await detail.isVisible(), true);
   await page.getByText('技术详情', { exact: true }).click();
+  await page.evaluate(() => { window.authStatus = { logged_in: true, login_state: 'unavailable', login_warning: '本地读取额度暂不可用，无需重新扫码。' }; });
+  await page.clock.runFor(60000);
+  await page.getByText('登录凭据已保存，暂时无法验证', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '扫码登录', exact: true }).count(), 0);
+  await page.evaluate(() => { window.authStatus = { logged_in: false, login_state: 'expired' }; });
+  await page.clock.runFor(60000);
+  await page.getByText('登录已失效，请重新扫码', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '扫码登录', exact: true }).count(), 1);
+  await page.evaluate(() => { window.authStatus = { logged_in: true, login_state: 'authenticated' }; });
+  await page.clock.runFor(60000);
+  await page.getByText('已登录 ✓', { exact: true }).waitFor();
   assert.deepEqual(errors, []);
   const output = process.argv[3];
   if (output) {

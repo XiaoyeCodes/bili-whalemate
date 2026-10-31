@@ -32,7 +32,7 @@ DEFAULT_AUTOMATION = {
     "maxCommentSendAttempts": 3,
     "pictureVerifySeconds": 45, "pictureVerifyPollSeconds": 5,
     "startHour": 8, "endHour": 23, "minGapMinutes": 10, "maxGapMinutes": 30,
-    "minInterestingScore": 13, "notifyQq": True, "maxDraftChars": 180,
+    "minInterestingScore": 13, "notifyQq": True,
     "requestTimeoutSeconds": 90, "writeWaitSeconds": 180, "contentMaxChars": 10000, "historyDays": 7, "retryDelayMinutes": 15,
 }
 
@@ -41,10 +41,12 @@ def validate_config(value: dict | None) -> dict:
     """Merge and validate saved/wire configuration without silently accepting bad ranges."""
     if value is None:
         value = {}
-    if not isinstance(value, dict) or set(value) - set(DEFAULT_AUTOMATION):
+    if not isinstance(value, dict) or set(value) - set(DEFAULT_AUTOMATION) - {'maxDraftChars'}:
         raise ValueError("B 站自动活动配置包含未知字段或不是对象")
     cfg = copy.deepcopy(DEFAULT_AUTOMATION)
     for key, item in value.items():
+        if key == 'maxDraftChars':
+            continue  # Accept saved legacy settings without imposing a draft length cap.
         if key == "features":
             if not isinstance(item, dict) or set(item) - set(KINDS):
                 raise ValueError("B 站功能开关包含未知字段")
@@ -85,7 +87,7 @@ def validate_config(value: dict | None) -> dict:
               "pictureVerifySeconds": (0, 180), "pictureVerifyPollSeconds": (1, 30),
               "strangerBatchSize": (1, 20),
               "minGapMinutes": (1, 1440), "maxGapMinutes": (1, 1440), "minInterestingScore": (0, 20),
-              "maxDraftChars": (20, 300), "requestTimeoutSeconds": (10, 300), "contentMaxChars": (500, 30000),
+              "requestTimeoutSeconds": (10, 300), "contentMaxChars": (500, 30000),
               "writeWaitSeconds": (0, 600), "maxDmAttempts": (1, 10), "historyDays": (1, 365), "retryDelayMinutes": (1, 1440)}
     for key, (low, high) in bounds.items():
         if type(cfg[key]) is not int or not low <= cfg[key] <= high:
@@ -313,9 +315,10 @@ class AutomationLedger:
 
 class BiliAutomation:
     """Serialize DM polling and video activities; all public writes consume ledger reservations."""
-    def __init__(self, ledger, backend, config, enabled, *, started_at=None):
+    def __init__(self, ledger, backend, config, enabled, *, started_at=None, polling=None):
         self.ledger, self.backend = ledger, backend
         self.config, self.enabled = config, enabled
+        self.polling = polling
         self.run_lock = threading.Lock()
         self.stopping = threading.Event()
         self.worker = None
@@ -367,6 +370,8 @@ class BiliAutomation:
                 "dynamicError": self.ledger.meta("dynamic_error"), "dynamicSchedule": self.ledger.meta("dynamic_schedule"),
                 "lastDynamicPreview": self.ledger.meta("dynamic_preview"),
                 "receivedAfter": self.inbound_after,
+                "effectivePolling": self.polling(cfg) if self.polling else {
+                    key: cfg[key] for key in ('dmPollSeconds', 'strangerPollSeconds')},
                 "lastPreview": self.ledger.meta("last_preview"), "events": self.ledger.events()}
 
     def launch(self, kind=None, dry_run=False):
@@ -397,6 +402,7 @@ class BiliAutomation:
         try:
             self.refresh_inbound_window(now)
             cfg = validate_config(self.config())
+            intervals = self.polling(cfg) if self.polling else cfg
             if not dry_run and (not cfg["enabled"] or not self.enabled()):
                 raise ValueError("B 站或自动活动总开关尚未启用")
             if self.ledger.meta("blocked") and not dry_run:
@@ -412,14 +418,14 @@ class BiliAutomation:
                         pass  # Keep the original retry time if usage cannot be read.
                 if manual or now >= self.ledger.meta("next_dm_at", 0):
                     if not dry_run:
-                        self.ledger.set_meta("next_dm_at", now + cfg["dmPollSeconds"])
+                        self.ledger.set_meta("next_dm_at", now + intervals["dmPollSeconds"])
                     self._dm(cfg, now, dry_run)
             if kind == "dmReply" or self.stopping.is_set() or self.ledger.meta("blocked"):
                 return
             if kind in (None, "strangerReply", "ownerReply") and (cfg["features"]["strangerReply"] or cfg["features"]["ownerReply"]) and (in_window or cfg["strangerAllDay"]):
                 if manual or now >= self.ledger.meta("next_stranger_at", 0):
                     if not dry_run:
-                        self.ledger.set_meta("next_stranger_at", now + cfg["strangerPollSeconds"])
+                        self.ledger.set_meta("next_stranger_at", now + intervals["strangerPollSeconds"])
                         self._strangers(cfg, now, kind)
             if kind in ("strangerReply", "ownerReply") or self.stopping.is_set() or self.ledger.meta('blocked'):
                 return

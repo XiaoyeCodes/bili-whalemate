@@ -131,6 +131,13 @@ class InboundWindowTest(unittest.TestCase):
         self.assertEqual(runtime.command.call_count, 1)
         self.assertIn('--dry', runtime.command.call_args.args[0])
 
+    def test_scheduler_uses_effective_intervals_instead_of_saved_fast_polling(self):
+        self.controller.polling = lambda cfg: {'dmPollSeconds': 216, 'strangerPollSeconds': 216}
+        self.run_once('dmReply')
+        self.assertEqual(self.ledger.meta('next_dm_at'), self.now + 10 + 216)
+        self.run_once('strangerReply')
+        self.assertEqual(self.ledger.meta('next_stranger_at'), self.now + 10 + 216)
+
 
 if __name__ == '__main__':
     unittest.main()

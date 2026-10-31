@@ -182,7 +182,6 @@ if (!MSG && !PICTURE) { console.error('用法: node dm.mjs --msg "…" 或 --pic
 
 // ── 闸门（写死，不接受参数覆盖）──────────────────────────────────────
 if (!OWNER) { console.error('✗ 配置里 owner.mid 为空 —— 私信只发给主人，没配就不发'); process.exit(2) }
-if (MSG.length > 300) { console.error(`✗ 私信太长（${MSG.length} > 300 字），退化成刷屏了 ✗`); process.exit(2) }
 
 const meInfo = await me()
 if (String(meInfo.mid) === ONLY_TO) {

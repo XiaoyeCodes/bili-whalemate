@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 from types import SimpleNamespace
 import json
 
-from bili_automation import DEFAULT_AUTOMATION
+from bili_automation import DEFAULT_AUTOMATION, validate_config
 from bili_runtime import BiliRuntime, parse_cli_failure
 
 
@@ -31,6 +31,34 @@ class RuntimeTest(unittest.TestCase):
         result = self.runtime.draft_video(self.material, self.cfg)
         self.assertNotIn("owner-private-profile", self.model.chat_json.call_args.args[0])
         self.assertEqual(result["interact"]["parent_rpid"], "100")
+
+    def test_comment_expression_can_cross_the_old_180_character_boundary(self):
+        self.runtime._comment_needs_video = Mock(return_value=False)
+        self.runtime.style_text = lambda text: text + ' (´-ω-`) 🌙'
+        self.model.chat.return_value = '字' * 180
+        result = self.runtime.draft_owner_comment({'text': '你好'}, self.cfg)
+        self.assertEqual(result, '字' * 180 + ' (´-ω-`) 🌙')
+        self.assertNotIn('最多180字', self.model.chat.call_args.args[0])
+
+    def test_dm_reply_is_not_rejected_at_the_old_260_or_280_character_limits(self):
+        self.runtime.helper_command = Mock(return_value={'self': '555', 'messages': []})
+        self.model.chat.return_value = '详细回应。' * 100
+        result = self.runtime.draft_dm({'key': 'new', 'ts': 102, 'text': '展开说说'}, self.cfg)
+        self.assertEqual(result, self.model.chat.return_value)
+        self.assertNotIn('最多260字', self.model.chat.call_args.args[0])
+
+    def test_public_drafts_keep_full_text_and_expressions_without_a_local_word_cap(self):
+        text = '完整观点。' * 100
+        self.model.chat_json.return_value = {**self.draft, 'comment': text,
+            'interact': {'parent_rpid': '100', 'text': text}}
+        self.runtime.style_text = lambda value: value + ' 🌙'
+        result = self.runtime.draft_video(self.material, self.cfg)
+        self.assertEqual(result['comment'], text + ' 🌙')
+        self.assertEqual(result['interact']['text'], text + ' 🌙')
+
+    def test_legacy_draft_length_setting_is_accepted_and_removed_from_resolved_config(self):
+        cfg = validate_config({'maxDraftChars': 180})
+        self.assertNotIn('maxDraftChars', cfg)
 
     def test_text_style_settings_are_shared_by_public_and_private_prompts(self):
         self.runtime.style = lambda: {"textStyleEnabled": True, "kaomojiRate": 0.5, "emojiRate": 0}

@@ -115,7 +115,6 @@
     "maxGapMinutes": 30,
     "minInterestingScore": 13,
     "notifyQq": true,
-    "maxDraftChars": 180,
     "requestTimeoutSeconds": 90,
     "writeWaitSeconds": 180,
     "contentMaxChars": 10000,

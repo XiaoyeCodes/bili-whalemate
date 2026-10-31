@@ -62,6 +62,8 @@ AUTH_TOKEN = os.environ.get("CMEM_AUTH_TOKEN", "")
 MAX_BODY = 1 << 20  # 1 MiB
 BILI_CONFIG_LOCK = threading.RLock()
 bili_automation = None
+from bili_session import SessionStatus, save_credentials
+bili_session_status = SessionStatus(Path(USER_HOME) / '.bili-ai' / 'credentials.json')
 
 
 def _mask(secret: str) -> str:
@@ -204,7 +206,7 @@ def _init() -> None:
                               ranker=lambda query, general: store.meme_candidates(query, include_general=general)), state=store.get_state)
     bili_automation = BiliAutomation(AutomationLedger(os.path.join(DATA_DIR, "bili-automation.sqlite3")), runtime,
         lambda: handler_factory()._load_bili_whale().get("automation"), lambda: handler_factory()._bili_enabled(),
-        started_at=time.time())
+        started_at=time.time(), polling=runtime.polling_intervals)
 
     # 内置调度（唤醒 + B 站；环境变量 CMEM_SCHEDULER=0 可关）
     global scheduler
@@ -1844,12 +1846,15 @@ class Handler(BaseHTTPRequestHandler):
                     "bili_jct": cookies.get("bili_jct", ""),
                     "buvid3": cookies.get("buvid3", ""),
                 }
+                if isinstance(d.get('refresh_token'), str) and d['refresh_token']:
+                    cred['refresh_token'] = d['refresh_token']
+                expiry = next((c.expires for c in jar if c.name == 'SESSDATA'), None)
+                if expiry:
+                    cred['expires_at'] = expiry
                 cred_dir = _os.path.join(USER_HOME, ".bili-ai")
                 cred_path = _os.path.join(cred_dir, "credentials.json")
                 _os.makedirs(cred_dir, exist_ok=True)
-                with open(cred_path, "w", encoding="utf-8") as f:
-                    _json.dump(cred, f, ensure_ascii=False, indent=2)
-                _os.chmod(cred_path, 0o600)
+                save_credentials(cred_path, cred)
                 # 验证
                 res = self._run_bili(["session"], timeout=40)
                 return {"ok": True, "code": 0, "saved": True,
@@ -1915,9 +1920,7 @@ class Handler(BaseHTTPRequestHandler):
         cred_path = _os.path.join(cred_dir, "credentials.json")
         _os.makedirs(cred_dir, exist_ok=True)
         try:
-            with open(cred_path, "w", encoding="utf-8") as f:
-                _json.dump(cred, f, ensure_ascii=False, indent=2)
-            _os.chmod(cred_path, 0o600)
+            save_credentials(cred_path, cred)
         except Exception as e:
             self._json(500, {"ok": False, "error": "save failed: " + str(e)})
             return
@@ -1941,13 +1944,17 @@ class Handler(BaseHTTPRequestHandler):
             pass
         bw = self._load_bili_whale()
         cred = _os.path.join(USER_HOME, ".bili-ai", "credentials.json")
-        logged_in = False
-        if _os.path.exists(cred) and _os.path.getsize(cred) > 20:
-            logged_in = bool(self._run_bili(["session"], timeout=25).get("ok"))
+        def verify():
+            result = self._run_bili(['session', '--json'], timeout=25)
+            try:
+                return _json.loads(result.get('stdout') or '')
+            except ValueError:
+                return {'state': 'unavailable'}
+        session = bili_session_status.status(verify)
         return {
             "ok": True,
             "enabled": bool(cfg.get("enabled")),
-            "logged_in": logged_in,
+            **session,
             "cred_path": cred,
             # 4 个「嘴」的开关
             "share": bool((bw.get("share") or {}).get("enabled", False)),
