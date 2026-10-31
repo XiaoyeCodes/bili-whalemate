@@ -203,7 +203,8 @@ def _init() -> None:
                               os.path.join(DATA_DIR, "bili-gallery-cache"),
                               ranker=lambda query, general: store.meme_candidates(query, include_general=general)), state=store.get_state)
     bili_automation = BiliAutomation(AutomationLedger(os.path.join(DATA_DIR, "bili-automation.sqlite3")), runtime,
-        lambda: handler_factory()._load_bili_whale().get("automation"), lambda: handler_factory()._bili_enabled())
+        lambda: handler_factory()._load_bili_whale().get("automation"), lambda: handler_factory()._bili_enabled(),
+        started_at=time.time())
 
     # 内置调度（唤醒 + B 站；环境变量 CMEM_SCHEDULER=0 可关）
     global scheduler
@@ -1512,7 +1513,9 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 if temporary is not None and os.path.exists(temporary):
                     os.unlink(temporary)
-            return cfg
+        if bili_automation is not None:
+            bili_automation.refresh_inbound_window()
+        return cfg
 
     def _add_proactive_action(self) -> None:
         """她自己加一条「醒来想做的事」。"""
@@ -1985,6 +1988,8 @@ class Handler(BaseHTTPRequestHandler):
                 path = ["listen", key]
             self._update_bili_whale([{"path": path, "value": val}])
 
+        if bili_automation is not None:
+            bili_automation.refresh_inbound_window()
         self._json(200, self._bili_status())
 
     def _bili_feed(self, thought: str = "") -> dict:

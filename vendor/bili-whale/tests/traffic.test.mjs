@@ -142,6 +142,45 @@ test('corrupt protection state refuses network instead of resetting budgets',asy
  const s=setup(t);fs.writeFileSync(path.join(s.directory,'traffic-state.json'),'{broken')
  await assert.rejects(s.guard.fetch('https://api.bilibili.com/x/one'),/损坏/);assert.equal(s.calls(),0)
 })
+
+test('a zero-filled primary recovers counters and uncertain operations from its synced backup',async t=>{
+ const s=setup(t)
+ const guard=createTrafficGuard({...s.options,transport:async()=>{throw Error('connection lost')}})
+ await assert.rejects(guard.fetch(endpoint,{method:'POST',headers,body:'message=one'}),/不确定/)
+ const state=guard.status()
+ assert.deepEqual(JSON.parse(fs.readFileSync(path.join(s.directory,'traffic-state.json.bak'),'utf8')),state)
+ fs.writeFileSync(path.join(s.directory,'traffic-state.json'),Buffer.alloc(128))
+ const recovered=createTrafficGuard(s.options)
+ assert.deepEqual(recovered.status(),state)
+ s.advance(120001)
+ await assert.rejects(recovered.fetch(endpoint,{method:'POST',headers,body:'message=one'}),/重复/)
+ await recovered.fetch('https://api.bilibili.com/x/one',{headers})
+ const account=Object.values(recovered.status().accounts)[0]
+ assert.equal(account.writeDay,1);assert.equal(account.readDay,1)
+ assert.equal(Object.values(recovered.status().operations)[0].status,'unknown')
+ assert.equal(s.calls(),1)
+})
+
+test('missing primary uses the backup and two damaged copies never reset protection',async t=>{
+ const s=setup(t)
+ await s.guard.fetch('https://api.bilibili.com/x/one')
+ const state=s.guard.status()
+ fs.unlinkSync(path.join(s.directory,'traffic-state.json'))
+ assert.deepEqual(createTrafficGuard(s.options).status(),state)
+ fs.writeFileSync(path.join(s.directory,'traffic-state.json.bak'),'[null]')
+ await assert.rejects(s.guard.fetch('https://api.bilibili.com/x/two'),/损坏/)
+ assert.equal(s.calls(),1)
+})
+
+test('manual recovery allows login reads while lost write history remains paused',async t=>{
+ const s=setup(t)
+ fs.writeFileSync(path.join(s.directory,'traffic-state.json'),JSON.stringify({recovery:{writesPaused:true}}))
+ await s.guard.fetch('https://api.bilibili.com/x/web-interface/nav',{headers})
+ await s.guard.resume(headers)
+ await assert.rejects(s.guard.fetch(endpoint,{method:'POST',headers,body:'message=one'}),error=>error.reason==='state-recovery'&&error.submission==='not-sent')
+ assert.equal(s.calls(),1)
+ assert.equal(s.guard.status().recovery.writesPaused,true)
+})
 test('failed polling backs off to fifteen minutes and resets after success',()=>{
  assert.equal(pollDelay(60,0),60000);assert.equal(pollDelay(60,1),120000)
  assert.equal(pollDelay(60,20),900000);assert.equal(pollDelay(300,2),900000)

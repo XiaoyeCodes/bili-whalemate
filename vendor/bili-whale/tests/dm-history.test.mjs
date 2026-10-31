@@ -60,7 +60,32 @@ test('empty is exit 1; baseline skips both directions; corrupt state is preserve
  const b=box(t);b.put(page([]));const r=b.run('--peek');assert.equal(r.status,1);assert.equal(JSON.parse(r.stdout).hit,false)
  b.put(page([row(2,1000,111),row(1,999)]));assert.equal(b.run('--baseline').status,0);assert.equal(b.run('--peek').status,1)
  b.save({owner:'222',pending:{mid:'222',hit:true,receipt:'legacy',ts:1001,key:'old',text:'pending'}});assert.equal(b.peek().receipt,'legacy');assert.equal(b.run('--ack','legacy').status,0)
- fs.writeFileSync(b.state,'broken');assert.equal(b.run('--peek').status,3);assert.equal(fs.readFileSync(b.state,'utf8'),'broken')
+ fs.writeFileSync(b.state,'broken');fs.writeFileSync(b.state+'.bak','broken');assert.equal(b.run('--peek').status,3);assert.equal(fs.readFileSync(b.state,'utf8'),'broken')
+})
+
+test('activation boundary filters old fetched messages and persisted mixed batches without skipping new arrivals',t=>{
+ const b=box(t);b.save({owner:'222',lastSeen:900,pending:{mid:'222',receipt:'old',key:'2',ts:1002,text:'old\nnew',messages:[{key:'1',ts:1000,text:'old'},{key:'2',ts:1002,text:'new'}]},queue:[]})
+ const fresh=b.run('--peek','--batch','--after','1001.5');assert.equal(fresh.status,0,fresh.stderr)
+ const message=JSON.parse(fresh.stdout);assert.equal(message.text,'new');assert.notEqual(message.receipt,'old')
+ assert.equal(b.run('--ack',message.receipt).status,0)
+ b.put(page([row(4,1004),row(3,1001),row(2,1000)]))
+ const fetched=b.run('--peek','--batch','--after','1001.5');assert.equal(fetched.status,0,fetched.stderr)
+ assert.equal(JSON.parse(fetched.stdout).text,'message 4')
+})
+
+test('activation boundary skips old pending and queued messages even across a renewed activation',t=>{
+ const b=box(t);b.save({owner:'222',lastSeen:900,pending:{mid:'222',receipt:'old',key:'1',ts:1000,text:'old'},queue:[{key:'2',ts:1001,text:'queued'}]})
+ b.put(page([row(3,1002),row(2,1001),row(1,1000)]))
+ const empty=b.run('--peek','--after','1002.5');assert.equal(empty.status,1,empty.stderr)
+ assert.equal(b.read().lastSeen,1002.5);assert.equal(b.read().pending,undefined)
+})
+
+test('durable DM backup restores a zero-filled primary without replaying an acknowledged message',t=>{
+ const b=box(t);b.save({owner:'222',lastSeen:900});b.put(page([row(1,1000)]))
+ const first=b.peek();assert.equal(b.run('--ack',first.receipt).status,0)
+ fs.writeFileSync(b.state,Buffer.alloc(216))
+ const recovered=b.run('--peek');assert.equal(recovered.status,1,recovered.stderr)
+ assert.equal(b.read().lastKey,'1');assert.equal(b.read().pending,undefined)
 })
 test('page cap fails without skipping unread messages',t=>{
  const b=box(t);b.save({owner:'222',lastSeen:1});const before=fs.readFileSync(b.state,'utf8'),pages={}

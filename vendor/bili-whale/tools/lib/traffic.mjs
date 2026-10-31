@@ -53,9 +53,30 @@ export class TrafficError extends Error {
 // the Electron host. The lock covers reservation/update only, never network I/O.
 export function createTrafficGuard({ directory, transport = (...a) => globalThis.fetch(...a), settings = riskSettings, now = Date.now, sleep = delay } = {}) {
   const stateFile = path.join(directory, 'traffic-state.json'), lockFile = stateFile + '.lock'
+  const backupFile = stateFile + '.bak'
+  function parse(file) {
+    const state = JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''))
+    if (!state || typeof state !== 'object' || Array.isArray(state)) throw Error('invalid state')
+    return state
+  }
   function read() {
-    try { const s = JSON.parse(fs.readFileSync(stateFile, 'utf8')); if (!s || typeof s !== 'object') throw Error('invalid state'); return s }
-    catch (e) { if (e.code === 'ENOENT') return {}; throw new TrafficError('请求保护状态损坏，请检查 traffic-state.json；已停止网络请求') }
+    try { return parse(stateFile) }
+    catch (primaryError) {
+      try { return parse(backupFile) }
+      catch (backupError) {
+        if (primaryError.code === 'ENOENT' && backupError.code === 'ENOENT') return {}
+        throw new TrafficError('请求保护状态损坏且没有可用备份，请检查 traffic-state.json；已停止网络请求')
+      }
+    }
+  }
+  function durableWrite(file, content) {
+    const temp = file + '.' + process.pid + '.' + crypto.randomUUID() + '.tmp'
+    try {
+      const fd = fs.openSync(temp, 'wx', 0o600)
+      try { fs.writeFileSync(fd, content); fs.fsyncSync(fd) }
+      finally { fs.closeSync(fd) }
+      fs.renameSync(temp, file)
+    } finally { fs.rmSync(temp, { force: true }) }
   }
   async function locked(fn) {
     fs.mkdirSync(directory, { recursive: true })
@@ -79,9 +100,10 @@ export function createTrafficGuard({ directory, transport = (...a) => globalThis
     }
     try {
       const s = read(), result = fn(s)
-      const temp = stateFile + '.' + process.pid + '.tmp'
-      try { fs.writeFileSync(temp, JSON.stringify(s)); fs.renameSync(temp, stateFile) }
-      finally { fs.rmSync(temp, { force: true }) }
+      const content = JSON.stringify(s)
+      // Persist the reservation in both copies before dispatching any request.
+      durableWrite(backupFile, content)
+      durableWrite(stateFile, content)
       return result
     } finally { fs.closeSync(fd); fs.unlinkSync(lockFile) }
   }
@@ -136,6 +158,7 @@ export function createTrafficGuard({ directory, transport = (...a) => globalThis
       a.hourAt = hourAt
       for (const [key, item] of Object.entries(s.operations)) if (item.status !== 'unknown' && item.status !== 'pending' && timestamp - item.at > 86400000) delete s.operations[key]
       if (writing) {
+        if (s.recovery?.writesPaused) throw new TrafficError('旧发送保护记录损坏，登录和读取已恢复；写操作需核查后恢复，避免重复发送', { reason: 'state-recovery' })
         if (s.operations[id]) throw new TrafficError('相同操作已提交或结果待核查，禁止重复发送', { reason: 'duplicate', submission: 'unknown', operationId: id })
         if (Object.keys(s.operations).length >= 2000) throw new TrafficError('发送记录已满，请先核查未确认操作')
         const gap = (url.pathname.endsWith('/send_msg') ? cfg.dmGapSec : cfg.writeGapSec) * 1000

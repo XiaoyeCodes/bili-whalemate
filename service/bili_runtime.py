@@ -220,6 +220,15 @@ class BiliRuntime:
         if not self.handler()._bili_tools_cfg().get(command, False):
             raise ValueError("B 站工具已在设置里关闭：" + command)
 
+    def _inbound_write_ready(self, kind, received_at):
+        """Recheck activation after cooldowns, before starting an outbound CLI."""
+        windows = getattr(self, 'inbound_windows', None)
+        if windows is None or kind not in windows:
+            return True
+        cfg = self.raw_config().get('automation') or {}
+        return (received_at > windows[kind] and cfg.get('enabled') is True
+                and cfg.get('features', {}).get(kind) is True and self.handler()._bili_enabled())
+
     def _prepare_publish(self, kind, material, draft, cfg):
         self._tool_allowed("comment")
         text = draft[kind]
@@ -267,6 +276,9 @@ class BiliRuntime:
                         return {"status": "failed", "blocked": True, "error": str(error)}
                     media_warning = "配图上传未确认，本条只发送文字，不自动重传图片：" + str(error)
             self._wait_write("comment", cfg)
+            if not self._inbound_write_ready(kind, material.get('receivedAt', 0)):
+                return {'status': 'failed', 'submission': 'not-sent', 'reason': 'before-activation',
+                        'error': '接收窗口或功能开关已改变，本条评论未发送'}
         except Exception as error:
             return {"status": "failed", "error": "发布前等待未完成：" + str(error)}
         try:
@@ -477,7 +489,10 @@ class BiliRuntime:
             raise ValueError(result["combined"][-400:])
 
     def dm_peek(self, cfg):
-        result = self.command(["dm-await", "--peek", "--batch", "--json"], cfg)
+        args = ['dm-await', '--peek', '--batch', '--json']
+        if getattr(self, 'inbound_after', None) is not None:
+            args += ['--after', str(self.inbound_after)]
+        result = self.command(args, cfg)
         try:
             message = json.loads(result["stdout"])
         except ValueError as error:
@@ -573,6 +588,9 @@ class BiliRuntime:
             return {"status": "failed", "error": "私信发送前检查失败：" + str(error)}
         if not preflight.get("ok"):
             return self._failure(preflight, submitted=False)
+        if not self._inbound_write_ready('dmReply', message.get('ts', 0)):
+            return {'status': 'failed', 'submission': 'not-sent', 'reason': 'before-activation',
+                    'error': '接收窗口或功能开关已改变，本条私信未发送'}
         since = time.time() - 5
         sent = self.command(["dm", "--msg", reply, "--go"], cfg)
         if not sent.get("ok"):

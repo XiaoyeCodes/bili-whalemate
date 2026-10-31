@@ -313,12 +313,48 @@ class AutomationLedger:
 
 class BiliAutomation:
     """Serialize DM polling and video activities; all public writes consume ledger reservations."""
-    def __init__(self, ledger, backend, config, enabled):
+    def __init__(self, ledger, backend, config, enabled, *, started_at=None):
         self.ledger, self.backend = ledger, backend
         self.config, self.enabled = config, enabled
         self.run_lock = threading.Lock()
         self.stopping = threading.Event()
         self.worker = None
+        self.inbound_lock = threading.RLock()
+        self.inbound_after = None if started_at is None else {
+            kind: started_at for kind in ('dmReply', 'strangerReply', 'ownerReply')}
+        self.inbound_active = {}
+        if self.inbound_after is not None:
+            self._save_inbound_window()
+            self.inbound_active = self._inbound_switches()
+
+    def _inbound_switches(self):
+        cfg = validate_config(self.config())
+        active = cfg['managed'] and cfg['enabled'] and self.enabled()
+        return {kind: bool(active and cfg['features'][kind]) for kind in self.inbound_after}
+
+    def _save_inbound_window(self):
+        self.backend.inbound_after = self.inbound_after['dmReply']
+        self.backend.inbound_windows = dict(self.inbound_after)
+        self.ledger.set_meta('inbound_after', self.inbound_after)
+        for kind, key in [('strangerReply', 'stranger_baseline'), ('ownerReply', 'owner_comment_baseline')]:
+            self.ledger.set_meta(key, max(self.ledger.meta(key, 0), self.inbound_after[kind]))
+
+    def refresh_inbound_window(self, now=None):
+        """Advance only newly enabled inboxes; ordinary settings saves retain their boundary."""
+        if self.inbound_after is None:
+            return
+        with self.inbound_lock:
+            active = self._inbound_switches()
+            changed = [kind for kind in active if active[kind] and not self.inbound_active.get(kind, False)]
+            if changed:
+                cutoff = time.time() if now is None else now
+                for kind in changed:
+                    self.inbound_after[kind] = cutoff
+                self._save_inbound_window()
+                for kind, key in [('dmReply', 'next_dm_at'), ('strangerReply', 'next_stranger_at'), ('ownerReply', 'next_stranger_at')]:
+                    if kind in changed:
+                        self.ledger.set_meta(key, cutoff)
+            self.inbound_active = active
 
     def status(self):
         cfg = validate_config(self.config())
@@ -330,6 +366,7 @@ class BiliAutomation:
                 "strangerError": self.ledger.meta("stranger_error"), "limitReplyText": LIMIT_REPLY_TEXT,
                 "dynamicError": self.ledger.meta("dynamic_error"), "dynamicSchedule": self.ledger.meta("dynamic_schedule"),
                 "lastDynamicPreview": self.ledger.meta("dynamic_preview"),
+                "receivedAfter": self.inbound_after,
                 "lastPreview": self.ledger.meta("last_preview"), "events": self.ledger.events()}
 
     def launch(self, kind=None, dry_run=False):
@@ -348,6 +385,7 @@ class BiliAutomation:
             self.worker.join()
 
     def tick(self, now=None):
+        self.refresh_inbound_window(now)
         cfg = validate_config(self.config())
         if not cfg["managed"] or not cfg["enabled"] or not self.enabled() or self.stopping.is_set():
             return
@@ -357,6 +395,7 @@ class BiliAutomation:
 
     def _run_owned(self, kind, dry_run, manual, now):
         try:
+            self.refresh_inbound_window(now)
             cfg = validate_config(self.config())
             if not dry_run and (not cfg["enabled"] or not self.enabled()):
                 raise ValueError("B 站或自动活动总开关尚未启用")
@@ -407,7 +446,8 @@ class BiliAutomation:
                 return
             owner = self.backend.owner_id()
             if self.ledger.meta("dm_baseline_owner") != owner:
-                self.backend.dm_baseline(cfg)
+                if self.inbound_after is None:
+                    self.backend.dm_baseline(cfg)
                 self.ledger.set_meta("dm_baseline_owner", owner)
             message = self.backend.dm_peek(cfg)
             if not message:
@@ -415,6 +455,15 @@ class BiliAutomation:
                 return
             if str(message.get("mid")) != owner:
                 raise ValueError("私信发送人不是配置的主人，已停止处理")
+            cutoff = self.inbound_after['dmReply'] if self.inbound_after is not None else None
+            if cutoff is not None:
+                rows = [row for row in message.get('messages', [message]) if row['ts'] > cutoff]
+                if not rows:
+                    self.backend.dm_ack(message, cfg)
+                    self.ledger.set_meta('dm_error', None)
+                    return
+                message = {**message, 'messages': rows, 'text': '\n'.join(row['text'] for row in rows),
+                           'key': rows[-1]['key'], 'ts': rows[-1]['ts']}
             if cfg["dmRequireMention"] and not self.backend.is_mention(message["text"]):
                 self.backend.dm_ack(message, cfg)
                 return
@@ -437,7 +486,14 @@ class BiliAutomation:
                 self.ledger.finish(action, "failed", error=str(error))
                 raise
             try:
-                result = self.backend.send_dm(message, reply, cfg)
+                fresh = validate_config(self.config())
+                self.refresh_inbound_window()
+                if (not fresh['enabled'] or not fresh['features']['dmReply'] or not self.enabled()
+                        or self.stopping.is_set()
+                        or (cutoff is not None and cutoff != self.inbound_after['dmReply'])):
+                    self.ledger.finish(action, 'failed', error='接收窗口或功能开关已改变，本条未发送')
+                    return
+                result = self.backend.send_dm(message, reply, fresh)
             except Exception as error:
                 result = {"status": "unknown", "error": "私信请求结果不明：" + str(error)}
             self.ledger.finish(action, result["status"], result=result, error=result.get("error"))
@@ -635,6 +691,11 @@ class BiliAutomation:
                 key = self.notification_key(item)
                 if self.ledger.incoming_seen(key):
                     continue
+                is_owner = str(item['mid']) == self.backend.owner_id()
+                category = 'ownerReply' if is_owner else 'strangerReply'
+                if self.inbound_after is not None and item['time'] <= self.inbound_after[category]:
+                    self.ledger.remember_incoming(key, item['mid'], now, 'before-activation')
+                    continue
                 if item["time"] < self.ledger.meta("stranger_baseline"):
                     self.ledger.remember_incoming(key, item["mid"], now, "historical")
                     continue
@@ -657,6 +718,7 @@ class BiliAutomation:
                     processed += 1
                     context = self.backend.notification_context(item, cfg)
                     context["is_owner"] = is_owner
+                    context['receivedAt'] = item['time']
                     day = day_at(now)
                     if self.ledger.remaining(day, category, cfg) > 0:
                         action = self.ledger.reserve(day, category, key, cfg, now)
@@ -674,6 +736,11 @@ class BiliAutomation:
                             continue
                         text = LIMIT_REPLY_TEXT
                     fresh = validate_config(self.config())
+                    self.refresh_inbound_window()
+                    if self.inbound_after is not None and item['time'] <= self.inbound_after[category]:
+                        self.ledger.finish(action, 'failed', error='接收窗口已改变，本条未发送')
+                        self.ledger.finish_incoming(key, 'before-activation')
+                        continue
                     if self.stopping.is_set() or not self.enabled() or not fresh["enabled"] or not fresh["features"][category]:
                         self.ledger.finish(action, "failed", error="发送前功能已关闭，本次未提交")
                         self.ledger.finish_incoming(key, "cancelled")
@@ -718,6 +785,14 @@ class BiliAutomation:
             payload = action['result']['retryPayload']
             context, reply, key = payload['context'], payload['reply'], payload['key']
             category = 'ownerReply' if context.get('is_owner') else 'strangerReply'
+            if (self.inbound_after is not None
+                    and context.get('receivedAt', action['started']) <= self.inbound_after[category]):
+                result = {key: value for key, value in action['result'].items()
+                          if key not in ('retryPayload', 'retryAt')}
+                result['skippedBeforeActivation'] = self.inbound_after[category]
+                self.ledger.finish(action['id'], 'failed', result, '服务开启前的评论草稿已跳过，不再补发')
+                self.ledger.finish_incoming(key, 'before-activation')
+                continue
             fresh = validate_config(self.config())
             if self.stopping.is_set() or not self.enabled() or not fresh['enabled']:
                 break
@@ -736,6 +811,10 @@ class BiliAutomation:
                 self.backend.notification_context({'oid': context['aid'], 'rpid': context['parent_rpid'],
                     'root': context['root'], 'mid': context['actorUid']}, fresh)
                 fresh = validate_config(self.config())
+                self.refresh_inbound_window()
+                if (self.inbound_after is not None
+                        and context.get('receivedAt', action['started']) <= self.inbound_after[category]):
+                    raise ValueError('接收窗口已改变，旧评论草稿未发送')
                 if self.stopping.is_set() or not self.enabled() or not fresh['enabled'] or not fresh['features'][category]:
                     raise ValueError('重试前功能已关闭，旧评论草稿未发送')
                 submitting = True

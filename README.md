@@ -80,6 +80,8 @@ Windows PowerShell 也可以直接执行：
 
 ## 验证与开发
 
+私信和评论回复仅处理本次服务或功能开启后收到的新消息，重启不补发旧消息；恢复与备份规则见[接收起点说明](docs/inbound-activation.md)。
+
 Windows 已使用独立 DSH_HOME、空白账号目录、不同端口进行安装和 Web 启动检查。测试不使用发布者账号发消息；目标电脑需重新登录后验证它自己的实际投递。见[验证记录](docs/validation.md)。
 
 ```powershell
