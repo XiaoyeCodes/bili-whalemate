@@ -22,6 +22,10 @@
   "biliShareToGroup": true,
   "biliComment": true,
   "biliMentionOwner": true,
+  "textStyleEnabled": true,
+  "kaomojiRate": 0.25,
+  "memeRate": 0.23,
+  "emojiRate": 0.4,
   "silentActions": [
     {
       "text": "自己上网逛逛（B 站热门、新闻、梗），看到有意思的记下来",
@@ -45,6 +49,10 @@
     },
     {
       "text": "写点什么（记一句今天的事，或者记个想法）",
+      "enabled": true
+    },
+    {
+      "text": "想发条说说，写两句现在的心情、今天想干什么（qq_napcat_api: send_qzone_msg）",
       "enabled": true
     },
     {
@@ -81,9 +89,5 @@
       "text": "看到一个好视频，想去评论区说两句（bili_comment），然后告诉老大",
       "enabled": true
     }
-  ],
-  "textStyleEnabled": true,
-  "kaomojiRate": 0.2,
-  "memeRate": 0.2,
-  "emojiRate": 0.2
+  ]
 }

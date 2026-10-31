@@ -2,23 +2,23 @@
 
 把大肥鱼的人设、回复能力、B 站活动、官方 QQ 推送、表情图库和设置迁移到另一台电脑的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)。这是基于 dsh-remembers 和 dsh-bili-whale 的社区组合包，不是 DeepSeek 或腾讯官方产品。
 
-当前源码包含[评论漏回修复与验证说明](docs/comment-delivery-fix.md)：明确未发送的评论会保存草稿并在冷却后恢复，通知按平台游标正确翻页。`main` 分支包含下述最新功能；下面的一句话安装仍下载已发布的 v1.0.0 完整包。源码更新不会覆盖该 Release，使用新功能需要用更新后的源码和已校验图库重新安装。
+当前源码包含[评论漏回修复与验证说明](docs/comment-delivery-fix.md)：明确未发送的评论会保存草稿并在冷却后恢复，通知按平台游标正确翻页。v1.1.0 同时包含本机批准导出的配置、三张人物卡及渠道选择、完整碎碎念提示词、QQ 图片识别提示词、自动任务参数与 444 张表情包。配置迁移范围和恢复方式见[迁移说明](docs/portable-settings.md)。
 
 ## 一句话安装
 
 把这句话发给另一台电脑上的开发助手：
 
-> 请安装 https://github.com/XiaoyeCodes/bili-whalemate 的 v1.0.0 完整插件包，按照 README 运行 bootstrap.ps1，使用我现有的 DeepSeek Harness profile；保留本机密钥和账号配置，安装自检后告诉我去哪里填写账号。
+> 请安装 https://github.com/XiaoyeCodes/bili-whalemate 的 v1.1.0 完整插件包，按照 README 运行 bootstrap.ps1，使用我现有的 DeepSeek Harness profile；保留本机密钥和账号配置，安装自检后告诉我去哪里填写账号。
 
 Windows PowerShell 也可以直接执行：
 
 ```powershell
-& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing 'https://raw.githubusercontent.com/XiaoyeCodes/bili-whalemate/v1.0.0/bootstrap.ps1').Content))
+& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing 'https://raw.githubusercontent.com/XiaoyeCodes/bili-whalemate/v1.1.0/bootstrap.ps1').Content))
 ```
 
 需要 Node.js 24.9+、Python 3.11+（含 venv），以及可用的 `dsh` 命令。桌面版可以先在设置里安装 `dsh` 命令；安装前完全退出 Harness。引导脚本下载约 300 MB 的完整资源包并校验 SHA-256，安装依赖、初始化干净数据、安装固定版本官方 QQ 插件，最后通过原生 `dsh plugin add` 注册组合包。默认选择已有的 desktop profile，否则使用 web。源码运行方式可在 Harness 仓库目录执行该命令，或给下载的 `install.ps1` 传入 `-HarnessSource <源码目录>`。
 
-无法访问 raw.githubusercontent.com 时，从 [v1.0.0 Release](https://github.com/XiaoyeCodes/bili-whalemate/releases/tag/v1.0.0) 下载 ZIP 和 SHA256SUMS，校验并解压，在 `bili-whalemate` 目录执行 `./install.ps1`。仅 `git clone` 或在插件管理器添加 GitHub URL **不含图库二进制，也不会创建 Python 环境**，请使用完整安装器。
+无法访问 raw.githubusercontent.com 时，从 [v1.1.0 Release](https://github.com/XiaoyeCodes/bili-whalemate/releases/tag/v1.1.0) 下载 ZIP 和 SHA256SUMS，校验并解压，在 `bili-whalemate` 目录执行 `./install.ps1`。通过 `git clone` 获取源码后运行 `./install.ps1` 也可以：安装器会自动下载同版本图库、校验完整包和每张图片，再初始化设置。仅在插件管理器添加 GitHub URL 不会完成 Python 环境和图库安装。
 
 手动指定目录、profile 或端口：
 
@@ -85,6 +85,10 @@ Windows PowerShell 也可以直接执行：
 登录验证会区分真实失效与临时请求失败；后台按读取预算安排检查，见[登录保持与轮询说明](docs/login-stability.md)。
 
 回复不设置本地固定字数上限，见[回复长度说明](docs/reply-length.md)。
+
+浏览、执行和错误详情在三个可收起的记录区中查看；已恢复故障退出当前异常，见[记录与恢复说明](docs/activity-records.md)。
+
+`web-video-reader` 让鲸鱼娘读取带时间戳的实际视频字幕，明确区分字幕和仅标题简介；默认开启，可在 B 站工具中关闭，见[字幕阅读说明](docs/web-video-reader.md)。
 
 Windows 已使用独立 DSH_HOME、空白账号目录、不同端口进行安装和 Web 启动检查。测试不使用发布者账号发消息；目标电脑需重新登录后验证它自己的实际投递。见[验证记录](docs/validation.md)。
 

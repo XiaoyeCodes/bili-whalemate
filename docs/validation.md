@@ -1,5 +1,13 @@
 # Validation
 
+## Portable local settings and complete gallery, 2026-11-01
+
+104 Node tests, 243 service tests and 16 installer/gallery tests passed. The isolated Bilibili settings and persona-card browser checks passed without browser errors. A focused browser verification confirmed that schedule information, effective polling intervals and both one-round buttons hide/show with the time/settings details control, including keyboard toggling. The installed client received the same adjustment.
+
+A fresh isolated installation with all 444 gallery files reproduced the 12 approved settings snapshots exactly, including all three persona cards, both channel selections, full writing/vision prompts and effective memory-plugin configuration. Private history tables remained empty. Reinstallation tests preserve edited prompts, channel selections, API keys and account bindings. Gallery recovery tests reject corrupt archives and images before installation and extract only manifest-listed files.
+
+The public-file audit and a separate comparison against the live machine's actual secrets/account identities passed. The comparison does not save the forbidden values to the repository. Public snapshots exclude credentials, monitored/owner accounts, chat history and personal learned memory.
+
 ## Reply topic selection, 2026-10-30
 
 147 focused Bilibili Python tests passed after routing comment replies by the current message's intent. Tests verify that ordinary conversation neither fetches nor receives video metadata/materials, malformed intent decisions stop drafting, gallery restrictions remain active, and video requests still receive bounded materials. Five isolated real-model previews used the active character card: three social messages stayed on topic without video references, while two explicit video questions selected video discussion. The video material in these previews was a labeled fixture; no test comment was published.

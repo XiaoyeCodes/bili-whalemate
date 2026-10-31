@@ -9,6 +9,7 @@ import re
 import secrets
 import shutil
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "service"))
@@ -79,6 +80,28 @@ def profile_settings(home, profile, media):
         inserted = field(row, "insert")
         if isinstance(inserted, SequenceNode):
             rows.extend(inserted.value)
+    def merge_missing(current, seed):
+        for key, value in seed.value:
+            existing = field(current, key.value)
+            if existing is None:
+                current.value.append((key, value))
+            elif isinstance(existing, MappingNode) and isinstance(value, MappingNode):
+                merge_missing(existing, value)
+    for plugin, settings in load(ROOT / "seed/profile-settings.json").items():
+        row = next((row for row in rows if getattr(field(row, "id"), "value", None) == plugin), None)
+        if row is None:
+            row = yaml.compose(yaml.safe_dump({"id": plugin, "config": {}}, allow_unicode=True))
+            if plugin == "im-qqbot":
+                put(row, "config", yaml.compose("appId: __FROM_ENV__\nappSecret: __FROM_ENV__\n"))
+            tree.value.append(row)
+            rows.append(row)
+        config_node = field(row, "config")
+        if config_node is None:
+            config_node = MappingNode("tag:yaml.org,2002:map", [])
+            put(row, "config", config_node)
+        if not isinstance(config_node, MappingNode):
+            raise ValueError("Profile configuration is computed; cannot add settings defaults")
+        merge_missing(config_node, yaml.compose(yaml.safe_dump(settings, allow_unicode=True)))
     qq = next((row for row in rows if getattr(field(row, "id"), "value", None) == "im-qqbot"), None)
     if qq is None:
         qq = yaml.compose("id: im-qqbot\nconfig:\n  appId: __FROM_ENV__\n  appSecret: __FROM_ENV__\n  preset: standard\n  directPrompt: ''\n  groupPrompt: ''\n  requireMention: true\n  access:\n    c2cMode: open\n    groupMode: disabled\n")
@@ -136,6 +159,12 @@ def setup(home, profile, python, node, gallery, port=8080, bridge_port=3081):
             quiet = load(ROOT / "seed/state-settings.json")
             store.conn.execute("UPDATE state SET dnd_start=?,dnd_end=? WHERE id=1", (quiet["dnd_start"], quiet["dnd_end"]))
         with store.conn:
+            if not store.conn.execute("SELECT 1 FROM persona_card LIMIT 1").fetchone():
+                library = load(ROOT / "seed/persona-cards.json")
+                now = time.time()
+                for index, card in enumerate(library["cards"]):
+                    store.conn.execute("INSERT INTO persona_card VALUES(?,?,?,?,?)", (card["id"], card["name"], card["prompt"], now + index / 1000, now))
+                store.conn.executemany("INSERT INTO persona_channel VALUES(?,?)", library["active"].items())
             for row in catalogue:
                 dest = media / row["file"]
                 if not dest.exists():
@@ -157,6 +186,7 @@ def setup(home, profile, python, node, gallery, port=8080, bridge_port=3081):
     target = data / "config.json"
     env = load(ROOT / "seed/environment.json")
     config_seed = {k.removeprefix("CMEM_").lower(): v for k,v in env.items() if k not in ("CMEM_MEME_MATCH_TIMEOUT_MS",)}
+    config_seed.update(load(ROOT / "seed/service-settings.json"))
     save(target, defaults(config_seed, load(target)) if target.exists() else config_seed)
     bridge = home / "remembers-service/official-qq-bridge.json"
     if not bridge.exists():
@@ -170,7 +200,7 @@ def setup(home, profile, python, node, gallery, port=8080, bridge_port=3081):
     # Explicit setup arguments select paths/ports; secrets live in separate files and are untouched.
     save(runtime, {**current_runtime, "python": str(python), "node": str(node), "profile": profile, "port": port, "startupTimeoutMs": 30000})
     profile_settings(home, profile, media)
-    save(home / "whalemate/seeded.json", {"version": "1.0.0", "galleryCount": len(catalogue)})
+    save(home / "whalemate/seeded.json", {"version": "1.1.0", "galleryCount": len(catalogue)})
     return {"ok": True, "galleryCount": len(catalogue), "profile": profile, "port": port, "needsLocalAccounts": True}
 
 

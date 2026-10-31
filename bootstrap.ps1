@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param([string]$Profile = '', [string]$HarnessSource = '', [string]$DshHome = '')
 $ErrorActionPreference = 'Stop'
-$version = 'v1.0.0'
+$version = 'v1.1.0'
 $asset = "bili-whalemate-$version.zip"
 $release = "https://github.com/XiaoyeCodes/bili-whalemate/releases/download/$version"
 $installRoot = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) "bili-whalemate/$version"

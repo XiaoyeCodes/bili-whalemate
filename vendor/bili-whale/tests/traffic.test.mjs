@@ -31,6 +31,14 @@ test('cross-process and cross-instance budgets survive restarts',async t=>{
  assert.equal(s.calls(),2)
  s.advance(3600001);await s.guard.fetch('https://api.bilibili.com/x/three');assert.equal(s.calls(),3)
 })
+test('external backend allowance is atomic and cannot overdraw a read budget',async t=>{
+ const s=setup(t,{readHourly:12,readDaily:12})
+ await s.guard.fetch('https://api.bilibili.com/x/one',{readCost:8})
+ await assert.rejects(s.guard.fetch('https://api.bilibili.com/x/two',{readCost:8}),/预算/)
+ assert.equal(s.calls(),1)
+ assert.equal(Object.values(s.guard.status().accounts)[0].readDay,8)
+ await assert.rejects(s.guard.fetch('https://api.bilibili.com/x/two',{readCost:0}),/无效/)
+})
 test('HTTP Retry-After pauses every endpoint and cannot be bypassed by no-cache',async t=>{
  const s=setup(t)
  const guard=createTrafficGuard({...s.options,transport:async()=>new Response('',{status:429,headers:{'retry-after':'1200'}})})

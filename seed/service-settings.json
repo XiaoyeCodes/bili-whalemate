@@ -1,0 +1,17 @@
+{
+  "llm_base": "https://api.deepseek.com/v1",
+  "llm_model": "deepseek-flash",
+  "llm_timeout": 60,
+  "embed_base": "",
+  "embed_model": "",
+  "embed_timeout": 20,
+  "embed_batch": 16,
+  "extract": true,
+  "extract_max_facts": 6,
+  "extract_neighbors": 5,
+  "surprisal_threshold": 0.35,
+  "emotion_threshold": 0.3,
+  "diary_enabled": true,
+  "evolve_enabled": true,
+  "episode_enabled": true
+}

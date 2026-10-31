@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from bili_write_usage import write_usage
+from bili_write_usage import write_usage, read_usage
 
 
 class WriteUsageTest(unittest.TestCase):
@@ -39,6 +39,16 @@ class WriteUsageTest(unittest.TestCase):
         self.assertEqual(result["dailyResetsAt"], tomorrow)
         result = write_usage(self.home, tomorrow)
         self.assertEqual((result["daily"], result["hourly"]), (0, 0))
+
+    def test_read_budget_recovers_at_midnight_without_changing_the_journal(self):
+        self.state({'date': '2026-10-28', 'readDay': 3000, 'readHour': 600, 'hourAt': int(self.now * 1000)})
+        before = (self.directory / 'traffic-state.json').read_bytes()
+        usage = read_usage(self.home, self.now)
+        self.assertEqual((usage['dailyRemaining'], usage['hourlyRemaining']), (0, 0))
+        tomorrow = dt.datetime(2026, 10, 29, 0, 0, tzinfo=self.zone).timestamp()
+        usage = read_usage(self.home, tomorrow)
+        self.assertEqual((usage['dailyRemaining'], usage['hourlyRemaining']), (3000, 600))
+        self.assertEqual((self.directory / 'traffic-state.json').read_bytes(), before)
 
     def test_hour_changes_at_the_clock_boundary_without_mutating_counters(self):
         self.state({"date": "2026-10-28", "writeDay": 31, "writeHour": 12, "hourAt": int(self.now * 1000)})

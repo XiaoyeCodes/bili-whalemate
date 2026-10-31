@@ -37,11 +37,23 @@ def repository_entries():
 
 
 def seed_privacy():
+    from export_settings import BILI_FIELDS, PROFILE_FIELDS, PROACTIVE_FIELDS, SERVICE_DEFAULTS, select, validate_config
     load = lambda name: json.loads((ROOT / "seed" / name).read_text(encoding="utf-8-sig"))
     assert set(load("persona.json")) == {"constitution", "self_image", "identity"}, "Unexpected persona fields"
     assert load("bili-whale.config.json")["owner"] == {"mid": "", "name": ""}, "Owner identity was exported"
     assert not any(any(s in k.lower() for s in ("key", "token", "secret")) for k in load("environment.json")), "Secret environment field exported"
     assert all(set(row) == {"file", "caption", "emotion", "keywords", "pack"} for row in load("gallery.json")), "Unexpected gallery fields"
+    assert set(load("service-settings.json")) == set(SERVICE_DEFAULTS), "Unapproved service fields"
+    profile = load("profile-settings.json")
+    assert profile == select(profile, PROFILE_FIELDS), "Unapproved profile fields or account bindings"
+    proactive = load("proactive.json")
+    assert proactive == select(proactive, PROACTIVE_FIELDS), "Unapproved proactive fields"
+    bili = load("bili-whale.config.json")
+    assert bili == {**select(bili, BILI_FIELDS), "owner": {"mid": "", "name": ""}, "automation": validate_config(bili["automation"])}, "Unapproved Bilibili fields"
+    library = load("persona-cards.json")
+    assert set(library) == {"cards", "active"} and all(set(c) == {"id", "name", "prompt"} for c in library["cards"]), "Unapproved persona card fields"
+    ids = {c["id"] for c in library["cards"]}
+    assert len(ids) == len(library["cards"]) and set(library["active"]) == {"qq", "bili"} and all(v in ids for v in library["active"].values()), "Invalid persona channel selections"
 
 
 def main():

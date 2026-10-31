@@ -138,6 +138,9 @@ export function createTrafficGuard({ directory, transport = (...a) => globalThis
     const headers = options.headers ?? input.headers ?? {}, account = identity(headers)
     const method = String(options.method ?? input.method ?? 'GET').toUpperCase()
     const writing = !['GET','HEAD','OPTIONS'].includes(method)
+    // External read-only backends reserve their bounded request allowance up front.
+    const readCost = options.readCost ?? 1
+    if (!Number.isInteger(readCost) || readCost < 1 || readCost > 50) throw new TrafficError('读取请求预算参数无效')
     const body = options.body ?? (writing && input instanceof Request ? await input.clone().text() : undefined)
     const operation = writing ? await fingerprint(url, body) : null
     const id = operation ? account.slice(0,16) + ':' + operation : null
@@ -166,14 +169,14 @@ export function createTrafficGuard({ directory, transport = (...a) => globalThis
         if ((a.writeHour ?? 0) >= cfg.writeHourly || (a.writeDay ?? 0) >= cfg.writeDaily) {
           throw new TrafficError('已达到本地写操作预算，本次不发送', { reason: 'write-budget', retryAt: Math.max((a.writeHour ?? 0) >= cfg.writeHourly ? hourResetsAt : 0, (a.writeDay ?? 0) >= cfg.writeDaily ? dayResetsAt : 0) })
         }
-      } else if ((a.readHour ?? 0) >= cfg.readHourly || (a.readDay ?? 0) >= cfg.readDaily) {
-        throw new TrafficError('已达到本地读取预算，请等待预算窗口恢复', { reason: 'read-budget', retryAt: Math.max((a.readHour ?? 0) >= cfg.readHourly ? hourResetsAt : 0, (a.readDay ?? 0) >= cfg.readDaily ? dayResetsAt : 0) })
+      } else if ((a.readHour ?? 0) + readCost > cfg.readHourly || (a.readDay ?? 0) + readCost > cfg.readDaily) {
+        throw new TrafficError('已达到本地读取预算，请等待预算窗口恢复', { reason: 'read-budget', retryAt: Math.max((a.readHour ?? 0) + readCost > cfg.readHourly ? hourResetsAt : 0, (a.readDay ?? 0) + readCost > cfg.readDaily ? dayResetsAt : 0) })
       }
       const slot = Math.max(timestamp, Number(s.nextAt ?? 0))
       if (slot - timestamp > 30000) throw new TrafficError('请求队列已满，本次停止')
       s.nextAt = slot + cfg.minGapMs
       if (writing) { a.writeHour=(a.writeHour??0)+1; a.writeDay=(a.writeDay??0)+1; a.lastWrite=timestamp; s.operations[id]={at:timestamp,status:'pending',endpoint:url.pathname} }
-      else { a.readHour=(a.readHour??0)+1; a.readDay=(a.readDay??0)+1 }
+      else { a.readHour=(a.readHour??0)+readCost; a.readDay=(a.readDay??0)+readCost }
       return { slot }
     })
       break

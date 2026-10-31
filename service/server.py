@@ -206,7 +206,7 @@ def _init() -> None:
                               ranker=lambda query, general: store.meme_candidates(query, include_general=general)), state=store.get_state)
     bili_automation = BiliAutomation(AutomationLedger(os.path.join(DATA_DIR, "bili-automation.sqlite3")), runtime,
         lambda: handler_factory()._load_bili_whale().get("automation"), lambda: handler_factory()._bili_enabled(),
-        started_at=time.time(), polling=runtime.polling_intervals)
+        started_at=time.time(), polling=runtime.polling_intervals, recovery=runtime.recovered_errors)
 
     # 内置调度（唤醒 + B 站；环境变量 CMEM_SCHEDULER=0 可关）
     global scheduler
@@ -557,6 +557,8 @@ class Handler(BaseHTTPRequestHandler):
             self._guard(lambda: self._set_bili_tools())
         elif path == "/bili/run":
             self._guard(lambda: self._bili_run())
+        elif path == "/bili/read-video":
+            self._guard(lambda: self._bili_read_video())
         elif path == "/emotion":
             self._guard(lambda: self._post_emotion())
         elif path == "/proactive/action":
@@ -1413,7 +1415,10 @@ class Handler(BaseHTTPRequestHandler):
             r = _sp.run(
                 [self.NODE_BIN, "tools/bili.mjs"] + args,
                 cwd=self.BILI_DIR, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
-                env={**os.environ, "NODE_USE_ENV_PROXY": "1", "NO_PROXY": "127.0.0.1,localhost,::1"},
+                env={**os.environ, "NODE_USE_ENV_PROXY": "1", "NO_PROXY": "127.0.0.1,localhost,::1",
+                     "CMEM_VIDEO_READER_PYTHON": sys.executable,
+                     "CMEM_VIDEO_READER_SCRIPT": str(Path(__file__).with_name('bili_video_reader.py')),
+                     "CMEM_VIDEO_READER_HOME": os.path.join(DATA_DIR, 'video-reader')},
             )
             from bili_runtime import parse_cli_failure
             failure = parse_cli_failure(r.stderr)
@@ -1606,6 +1611,7 @@ class Handler(BaseHTTPRequestHandler):
         "comments": "看一条视频的热评",
         "subtitles": "拉视频官方字幕",
         "video-content": "不点开还原视频内容",
+        "web-video-reader": "按实际字幕读取视频正文；无字幕时明确标注仅标题和简介",
         "search": "搜 B 站视频",
         "likes": "收到的赞（谁赞了什么）",
         "fav": "收藏（她想留着的东西）",
@@ -1770,6 +1776,26 @@ class Handler(BaseHTTPRequestHandler):
         text = str(thought or "").strip()[:200]
         self._json(200, {"ok": bool(text), "thought": text, "titles": titles})
 
+    def _bili_video_result(self, target):
+        result = self._run_bili(['web-video-reader', target], timeout=90, output_limit=250000)
+        try:
+            value = json.loads(result.get('stdout') or '')
+        except ValueError:
+            return {'ok': False, 'coverage': 'unavailable', 'error': '视频读取未返回有效的结构化结果'}
+        if not isinstance(value, dict) or value.get('coverage') not in ('subtitles', 'metadata_only', 'unavailable'):
+            return {'ok': False, 'coverage': 'unavailable', 'error': '视频读取结果格式不完整'}
+        return value
+
+    def _bili_read_video(self):
+        if not self._bili_tools_cfg().get('web-video-reader'):
+            self._json(403, {'ok': False, 'coverage': 'unavailable', 'error': '该视频读取工具未启用，请在 B 站工具中开启'})
+            return
+        target = self._body().get('url')
+        if not isinstance(target, str) or not 1 <= len(target.strip()) <= 2000:
+            self._json(400, {'ok': False, 'coverage': 'unavailable', 'error': '请提供 BV 号或 B 站视频链接'})
+            return
+        self._json(200, self._bili_video_result(target.strip()))
+
     def _bili_run(self) -> None:
         body = self._body()
         cmd = str(body.get("command") or "").strip()
@@ -1782,6 +1808,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not cfg.get(cmd):
             self._json(403, {"ok": False, "error": "该工具未启用（去设置里打开）"})
+            return
+        if cmd == 'web-video-reader':
+            if len(args) != 1 or not isinstance(args[0], str):
+                self._json(400, {'ok': False, 'coverage': 'unavailable', 'error': '视频读取只接受一个 BV 号或链接参数'})
+                return
+            self._json(200, self._bili_video_result(args[0]))
             return
         res = self._run_bili([cmd] + [str(a) for a in args], timeout=300)
         self._json(200, {

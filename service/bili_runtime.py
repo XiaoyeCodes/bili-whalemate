@@ -53,6 +53,20 @@ class BiliRuntime:
         from bili_session import polling_intervals
         return polling_intervals(cfg, self.raw_config().get('risk') or {})
 
+    def recovered_errors(self, errors, now):
+        """Resolve removed local length checks and read budgets whose current account has recovered."""
+        resolved = [key for key, message in errors.items() if message and any(marker in message for marker in (
+            '回复加入文字表情后超过字数上限', '文案加入文字表情后超过字数上限'))]
+        keys = [key for key, message in errors.items() if message and '已达到本地读取预算' in message]
+        if not keys:
+            return resolved
+        from bili_write_usage import read_usage
+        try:
+            usage = read_usage(now=now, limits=self.raw_config().get('risk') or {})
+        except (OSError, ValueError, TypeError):
+            return resolved
+        return resolved + keys if usage['dailyRemaining'] > 0 and usage['hourlyRemaining'] > 0 else resolved
+
     def owner_id(self):
         owner = str((self.raw_config().get("owner") or {}).get("mid") or "").strip()
         if not re.fullmatch(r"[0-9]+", owner):

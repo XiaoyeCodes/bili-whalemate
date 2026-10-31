@@ -1,6 +1,6 @@
 {
   "name": "bili-whalemate",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "大肥鱼：共享人设、官方 QQ、Bilibili 自动互动和表情图库的可迁移 Harness 组合包",
   "type": "module",
   "main": "index.mjs",
@@ -16,6 +16,7 @@
     "client.js",
     "client.mjs",
     "tools",
+    "skills",
     "vendor",
     "seed",
     "cordis.patch.yml",
@@ -30,6 +31,7 @@
     "service/*.py",
     "service/schema.sql",
     "service/requirements.txt",
+    "service/requirements-video-reader.txt",
     "official-qq-bridge.mjs",
     "install-official-qq-bridge.mjs",
     "docs/*.md"

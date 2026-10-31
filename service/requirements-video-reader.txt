@@ -1,0 +1,3 @@
+# Reviewed GitHub main as of 2026-11-01; Bilibili backend version tested by that commit.
+agent-reach @ https://github.com/Panniantong/Agent-Reach/archive/14c213405669414492bda0f8d52cc6531d062c45.zip
+bilibili-cli==0.6.2

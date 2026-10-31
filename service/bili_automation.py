@@ -15,6 +15,7 @@ from life_context import LIFE_DEFAULTS, validate_life
 KINDS = ("browse", "recommend", "comment", "interact", "dmReply", "strangerReply", "ownerReply", "dynamic")
 ALL_KINDS = KINDS + ("strangerNotice",)
 PUBLIC_KINDS = ("recommend", "comment", "interact")
+ERROR_CHANNELS = ('last_error', 'dm_error', 'stranger_error', 'dynamic_error', 'blocked')
 SHANGHAI = dt.timezone(dt.timedelta(hours=8), "Asia/Shanghai")
 SCHEMA_VERSION = 5
 LIMIT_REPLY_TEXT = "token快要用完啦，我的主人不让我回答啦"
@@ -215,6 +216,59 @@ class AutomationLedger:
         with self.lock, self.conn:
             self.conn.execute("INSERT INTO meta VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                               (key, json.dumps(value, ensure_ascii=False)))
+            if key in ERROR_CHANNELS:
+                self._record_error(key, value)
+
+    def _record_error(self, source, message):
+        history = self.meta('error_history', [])
+        now = time.time()
+        previous = next((row for row in reversed(history) if row['source'] == source and row['status'] == 'active'), None)
+        if previous and previous['message'] == message:
+            previous.update(lastSeenAt=now, occurrences=previous['occurrences'] + 1)
+        else:
+            if previous:
+                previous.update(status='resolved', resolvedAt=now, resolution='replaced' if message else 'recovered')
+            if message:
+                history.append({'id': str(uuid.uuid4()), 'source': source, 'message': str(message),
+                                'status': 'active', 'firstSeenAt': now, 'lastSeenAt': now, 'occurrences': 1})
+        active = [row for row in history if row['status'] == 'active']
+        remaining = max(0, 100 - len(active))
+        old = [row for row in history if row['status'] != 'active'][-remaining:] if remaining else []
+        self.conn.execute("INSERT INTO meta VALUES('error_history',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                          (json.dumps(sorted(old + active, key=lambda row: row['firstSeenAt']), ensure_ascii=False),))
+
+    def capture_current_errors(self):
+        with self.lock:
+            history = self.meta('error_history', [])
+            for source in ERROR_CHANNELS:
+                message = self.meta(source)
+                if message and not any(row['source'] == source and row['message'] == message and row['status'] == 'active' for row in history):
+                    self.set_meta(source, message)
+
+    def error_records(self):
+        """Project current/recovered faults and old uncertain action receipts without retrying them."""
+        with self.lock:
+            self.capture_current_errors()
+            history = self.meta('error_history', [])
+            known = {(row['source'], row['message']) for row in history}
+            rows = self.conn.execute("SELECT id,kind,status,started,ended,error,result FROM actions WHERE error IS NOT NULL OR status='unknown' OR result LIKE '%mediaWarning%' ORDER BY started DESC LIMIT 100").fetchall()
+            for row in rows:
+                result = json.loads(row['result'] or '{}')
+                message = row['error'] or result.get('mediaWarning') or '发送结果尚未确认，请先核查，不会自动重发'
+                source = {'dmReply': 'dm_error', 'ownerReply': 'stranger_error', 'strangerReply': 'stranger_error',
+                          'strangerNotice': 'stranger_error', 'dynamic': 'dynamic_error'}.get(row['kind'], 'last_error')
+                if row['status'] != 'unknown' and (source, message) in known:
+                    continue
+                history.append({'id': 'action:' + row['id'], 'source': source, 'message': message,
+                                'status': 'review' if row['status'] == 'unknown' else 'historical',
+                                'firstSeenAt': row['started'], 'lastSeenAt': row['ended'] or row['started'], 'occurrences': 1})
+                known.add((source, message))
+            return sorted(history, key=lambda row: row['lastSeenAt'], reverse=True)
+
+    def browse_records(self, limit=12):
+        with self.lock:
+            rows = self.conn.execute("SELECT id,started,ended,result FROM actions WHERE kind='browse' AND status='success' ORDER BY started DESC LIMIT ?", (limit,)).fetchall()
+            return [{**dict(row), 'result': json.loads(row['result'] or '{}')} for row in rows]
 
     def enqueue(self, videos):
         with self.lock, self.conn:
@@ -315,10 +369,11 @@ class AutomationLedger:
 
 class BiliAutomation:
     """Serialize DM polling and video activities; all public writes consume ledger reservations."""
-    def __init__(self, ledger, backend, config, enabled, *, started_at=None, polling=None):
+    def __init__(self, ledger, backend, config, enabled, *, started_at=None, polling=None, recovery=None):
         self.ledger, self.backend = ledger, backend
         self.config, self.enabled = config, enabled
         self.polling = polling
+        self.recovery = recovery
         self.run_lock = threading.Lock()
         self.stopping = threading.Event()
         self.worker = None
@@ -362,6 +417,13 @@ class BiliAutomation:
     def status(self):
         cfg = validate_config(self.config())
         now = time.time()
+        with self.ledger.lock:
+            self.ledger.capture_current_errors()
+            if self.recovery:
+                errors = {key: self.ledger.meta(key) for key in ERROR_CHANNELS}
+                for key in self.recovery(errors, now):
+                    if key in ERROR_CHANNELS and errors.get(key):
+                        self.ledger.set_meta(key, None)
         return {"config": cfg, "day": day_at(now), "targets": self.ledger.plan(day_at(now), cfg),
                 "counts": self.ledger.counts(day_at(now)), "busy": self.run_lock.locked(), "biliEnabled": self.enabled(),
                 "nextBrowseAt": self.ledger.meta("next_browse_at"), "lastError": self.ledger.meta("last_error"),
@@ -372,7 +434,8 @@ class BiliAutomation:
                 "receivedAfter": self.inbound_after,
                 "effectivePolling": self.polling(cfg) if self.polling else {
                     key: cfg[key] for key in ('dmPollSeconds', 'strangerPollSeconds')},
-                "lastPreview": self.ledger.meta("last_preview"), "events": self.ledger.events()}
+                "lastPreview": self.ledger.meta("last_preview"), "events": self.ledger.events(),
+                "browseHistory": self.ledger.browse_records(), "errorRecords": self.ledger.error_records()}
 
     def launch(self, kind=None, dry_run=False):
         if kind is not None and kind not in KINDS:
@@ -685,7 +748,14 @@ class BiliAutomation:
             processed = self._retry_comments(cfg, now, requested)
             if processed >= cfg['strangerBatchSize'] or self.ledger.meta('blocked'):
                 return
-            items = self.backend.notifications(cfg)
+            try:
+                items = self.backend.notifications(cfg)
+            except Exception:
+                self.ledger.set_meta('stranger_error_phase', 'read')
+                raise
+            if self.ledger.meta('stranger_error_phase') == 'read':
+                self.ledger.set_meta('stranger_error', None)
+                self.ledger.set_meta('stranger_error_phase', None)
             if not self.ledger.meta("stranger_baseline"):
                 for item in items:
                     self.ledger.remember_incoming(self.notification_key(item), item["mid"], now, "baseline")
@@ -721,6 +791,7 @@ class BiliAutomation:
                 action = None
                 submitting = False
                 try:
+                    self.ledger.set_meta('stranger_error_phase', 'reply')
                     processed += 1
                     context = self.backend.notification_context(item, cfg)
                     context["is_owner"] = is_owner

@@ -7,7 +7,7 @@
 
 import { resolve } from "node:path";
 
-export const PLUGIN_VERSION = "1.0.0";
+export const PLUGIN_VERSION = "1.1.0";
 
 const ENV = {
   endpoint: ["CMEM_URL", "CMEM_ENDPOINT"],

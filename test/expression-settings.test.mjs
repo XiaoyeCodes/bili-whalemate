@@ -12,7 +12,7 @@ const { apply } = await import('../remembers.mjs');
 
 async function fixture(t, rate, enabled = true, cards = null) {
   const originalFetch = globalThis.fetch;
-  const events = new Map(), tools = new Map(), cleanups = [], logs = [], sections = [];
+  const events = new Map(), tools = new Map(), skills = new Map(), cleanups = [], logs = [], sections = [];
   const proactive = { memeRate: rate, kaomojiRate: rate, emojiRate: rate, textStyleEnabled: enabled };
   globalThis.fetch = async url => {
     const path = new URL(url).pathname;
@@ -26,6 +26,7 @@ async function fixture(t, rate, enabled = true, cards = null) {
     on(event, fn) { const entries = events.get(event) || []; entries.push(fn); events.set(event, entries); },
     effect(fn) { const dispose = fn(); if (typeof dispose === 'function') cleanups.push(dispose); },
     get(name) { return name === 'tools' ? { register(tool) { tools.set(tool.name, tool); return () => tools.delete(tool.name); } }
+      : name === 'skills' ? { register(skill) { skills.set(skill.name, skill); return () => skills.delete(skill.name); } }
       : name === 'systemPrompt' ? { section(section) { sections.push(section); return () => {}; } } : undefined; },
   };
   t.after(() => { for (const cleanup of cleanups.reverse()) cleanup(); globalThis.fetch = originalFetch; });
@@ -38,7 +39,7 @@ async function fixture(t, rate, enabled = true, cards = null) {
   const handler = events.get('agent/pre-step').at(-1);
   const decision = await handler({ agent: { session: { id: 'expression-fixture', header: {} } }, signal: { aborted: false } },
     async () => ({ kind: 'enter', messages: [] }));
-  return { text: decision.messages.map(message => message.content.map(part => part.text || '').join('')).join('\n'), tools, sections, handler, events };
+  return { text: decision.messages.map(message => message.content.map(part => part.text || '').join('')).join('\n'), tools, skills, sections, handler, events };
 }
 
 for (const rate of [0, 0.01, 0.2, 0.37, 0.5, 0.99, 1]) {
@@ -113,6 +114,26 @@ test('QQ reminds the current card without treating old conversation as a style i
   await events.get('agent/created')[0]({ agent: { status: 'idle', session: { id: 'refresh', header: {} } }, source: 'test' });
   assert.match(text(await step(agent)), /当前 QQ 人物卡为“澜澜”/);
   assert.doesNotMatch(text(await step({ session: { id: 'web-fixture', header: {} } })), /本轮人物卡/);
+});
+
+test('reviewed video skill and typed reader are registered and execute the structured endpoint', async t => {
+  const { tools, skills } = await fixture(t, 0.2);
+  const skill = skills.get('web-video-reader');
+  assert.ok(skill);
+  assert.match(skill.content, /bili_read_video/);
+  assert.match(skill.content, /coverage/);
+  assert.equal(skill.resourceBase.kind, 'directory');
+  const tool = tools.get('bili_read_video');
+  assert.ok(tool);
+  let request;
+  globalThis.fetch = async (url, options) => {
+    request = { url: String(url), body: JSON.parse(options.body) };
+    return new Response(JSON.stringify({ ok: true, coverage: 'subtitles', transcript: '真实字幕' }));
+  };
+  const result = await tool.execute({ url: 'BV1QosZ62Eb5' });
+  assert.match(request.url, /\/bili\/read-video$/);
+  assert.equal(request.body.url, 'BV1QosZ62Eb5');
+  assert.equal(result.coverage, 'subtitles');
 });
 
 test('scene matching failures do not fall back to random emotion images', async t => {

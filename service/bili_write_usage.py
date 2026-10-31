@@ -1,4 +1,4 @@
-"""Read the current account's local Bilibili write budget counters."""
+"""Read the current account's local Bilibili request budget counters."""
 import datetime as dt
 import hashlib
 import json
@@ -11,7 +11,7 @@ import time
 SHANGHAI = dt.timezone(dt.timedelta(hours=8))
 
 
-def write_usage(home=None, now=None, limits=None):
+def write_usage(home=None, now=None, limits=None, *, kind='write'):
     """Read Beijing clock-hour/day counters and effective limits without changing traffic state.
 
     Window ends and asOf are Unix seconds. Each write request consumes one unit;
@@ -40,8 +40,10 @@ def write_usage(home=None, now=None, limits=None):
     timestamp = time.time() if now is None else now
     local = dt.datetime.fromtimestamp(timestamp, SHANGHAI)
     hour_start = math.floor(timestamp / 3600) * 3600
-    day = record.get("writeDay", 0)
-    hour = record.get("writeHour", 0)
+    if kind not in ('write', 'read'):
+        raise ValueError('未知的请求计数类型')
+    day = record.get(kind + 'Day', 0)
+    hour = record.get(kind + 'Hour', 0)
     hour_at = record.get("hourAt", 0)
     if any(type(value) is not int or value < 0 for value in (day, hour, hour_at)):
         raise ValueError("写操作计数数据无效")
@@ -51,9 +53,14 @@ def write_usage(home=None, now=None, limits=None):
     def limit(key, default):
         value = limits.get(key, default)
         return math.floor(value) if type(value) in (int, float) and math.isfinite(value) and value >= 1 else default
-    daily_limit, hourly_limit = limit("writeDaily", 30), limit("writeHourly", 12)
+    daily_limit, hourly_limit = limit(kind + 'Daily', 3000 if kind == 'read' else 30), limit(kind + 'Hourly', 600 if kind == 'read' else 12)
     return {"daily": daily, "hourly": hourly, "dailyLimit": daily_limit, "hourlyLimit": hourly_limit,
             "dailyRemaining": max(0, daily_limit - daily), "hourlyRemaining": max(0, hourly_limit - hourly),
             "hourStartedAt": hour_start, "hourResetsAt": hour_start + 3600,
             "dailyResetsAt": (local.replace(hour=0, minute=0, second=0, microsecond=0) + dt.timedelta(days=1)).timestamp(),
             "asOf": timestamp}
+
+
+def read_usage(home=None, now=None, limits=None):
+    """Read current account read counters with the same calendar windows as the request guard."""
+    return write_usage(home, now, limits, kind='read')

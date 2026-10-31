@@ -9,6 +9,7 @@ const map = {
   traffic: ['commands/traffic.mjs', '请求保护状态 / 人工核查后恢复'],
   // —— 读（不需要写操作，安全） ——
   session: ['verify/session.mjs', '确认凭据属于哪个号'],
+  'web-video-reader': ['commands/web-video-reader.mjs', '按实际字幕读取 B 站视频正文；无字幕明确标记仅标题简介：<BV或视频链接>'],
   thread: ['verify/thread.mjs', '导出一条评论的完整楼中楼结构'],
   'check-comment': ['verify/comment-exists.mjs', '按 rpid 复核评论是否存在'],
   'check-dynamic': ['verify/dynamic-inspect.mjs', '看动态的结构化内容（类型/图片/节点）'],

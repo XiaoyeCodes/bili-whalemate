@@ -65,7 +65,7 @@ try {
         data = structuredClone(window.saved);
         if (window.wrongReadback) data.risk.writeDaily += 1;
       }
-      else if (path === '/bili/tools') data = { tools: [] };
+      else if (path === '/bili/tools') data = { tools: [{ cmd: 'web-video-reader', desc: '按实际字幕读取视频正文', enabled: true, write: false }] };
       else if (path === '/bili/write-usage') {
         if (window.usageFailure) return new Response('{"error":"fixture unavailable"}', { status: 503 });
         const hourStartedAt = Math.floor(Date.now() / 3600000) * 3600;
@@ -77,7 +77,7 @@ try {
       }
       else if (path === '/bili/automation') data = { config: window.saved.automation, day: '2026-10-28', targets: { browse: 6, recommend: 1, comment: 1, interact: 1, dmReply: 20, strangerReply: 5, ownerReply: 20 }, counts: {}, events: [
         { id: 'fixture-unknown', kind: 'dmReply', status: 'unknown', error: 'file:///private/example.mjs:59\n at guarded (node:internal/task:10)\n' + 'detail '.repeat(80) },
-      ] };
+      ], ...window.activityState };
       else data = {};
       return new Response(JSON.stringify(data), { headers: { 'content-type': 'application/json' } });
     };
@@ -88,12 +88,15 @@ try {
         effect: fn => fn(),
         get: name => name === 'uiConversation' ? { events: { register() {} } } : ({ inject: (_, fn) => fn(), register: (meta, component) => { sections[meta.id] = component; } }),
       });
-      window.ReactDOM.createRoot(document.getElementById('root')).render(window.React.createElement(sections['dsh-remembers-bili']));
+      const root = window.ReactDOM.createRoot(document.getElementById('root'));
+      window.renderBiliSettings = key => root.render(window.React.createElement(sections['dsh-remembers-bili'], { key }));
+      window.renderBiliSettings('initial');
     } };
   });
   await page.addScriptTag({ path: fileURLToPath(new URL('../client.js', import.meta.url)) });
   const panel = page.locator('[data-bili-automation]');
   await panel.waitFor();
+  assert.equal(await page.getByRole('checkbox', { name: /web-video-reader/ }).isChecked(), true);
   const usage = page.locator('[data-write-usage]');
   await usage.getByText('今日已用 31 / 30 次，剩余 0 次（北京时间零点重置）', { exact: true }).waitFor();
   await usage.getByText('本小时 12:00–13:00：已用 4 / 12 次，剩余 8 次', { exact: true }).waitFor();
@@ -103,9 +106,46 @@ try {
   await page.evaluate(() => { window.usage.hourStartedAt = Math.floor(Date.now() / 3600000) * 3600; window.usage.hourly = 3; window.usage.daily = 34; });
   await page.clock.fastForward(10000);
   await usage.getByText('本小时 13:00–14:00：已用 3 / 12 次，剩余 9 次', { exact: true }).waitFor();
+  const browseRecords = page.locator('[data-browse-history]');
+  const executionRecords = page.locator('[data-execution-history]');
+  const errorRecords = page.locator('[data-error-history]');
+  assert.equal(await browseRecords.evaluate(el => el.open), false);
+  assert.equal(await executionRecords.evaluate(el => el.open), false);
+  assert.equal(await errorRecords.evaluate(el => el.open), false);
+  assert.equal(await executionRecords.evaluate(el => !!(el.compareDocumentPosition(document.querySelector('[data-error-history]')) & Node.DOCUMENT_POSITION_FOLLOWING)), true);
+  await page.evaluate(() => {
+    window.activityState = {
+      lastError: '已达到本地读取预算，请等待预算窗口恢复',
+      lastPreview: { video: { title: '预览视频' }, draft: { summary: '预览摘要', recommend: '推荐草稿', comment: '评论草稿' } },
+      browseHistory: [{ id: 'browse', started: Date.now() / 1000, result: { title: '已浏览视频', summary: '已浏览摘要' } }],
+      errorRecords: [{ id: 'budget', source: 'last_error', message: '已达到本地读取预算，请等待预算窗口恢复', status: 'active' }],
+    };
+  });
+  await page.clock.fastForward(10000);
+  assert.equal(await page.getByText(/最近预览：预览视频/).isVisible(), false);
+  await page.getByText('最近浏览记录', { exact: true }).click();
+  await page.getByText(/最近预览：预览视频/).waitFor();
+  await page.getByText('已浏览视频', { exact: true }).waitFor();
+  await page.getByText('最近浏览记录', { exact: true }).press('Enter');
+  assert.equal(await page.getByText(/最近预览：预览视频/).isVisible(), false);
+  assert.equal(await page.getByText('已达到本地读取预算，请等待预算窗口恢复', { exact: true }).isVisible(), false);
+  await page.getByText('报错记录', { exact: true }).click();
+  await errorRecords.getByText('已达到本地读取预算，请等待预算窗口恢复', { exact: true }).waitFor();
+  await page.evaluate(() => {
+    window.activityState.lastError = null;
+    window.activityState.errorRecords[0].status = 'resolved';
+  });
+  await page.clock.fastForward(10000);
+  assert.equal(await errorRecords.locator('[data-error-state="active"]').count(), 0);
+  await errorRecords.locator('[data-error-state="resolved"]').getByText(/已解除/).waitFor();
+  await page.evaluate(() => { window.activityState = {}; });
+  await page.clock.fastForward(10000);
+  await errorRecords.evaluate(el => { el.open = false; });
   await page.evaluate(() => { window.usageFailure = true; });
   await page.clock.fastForward(10000);
-  await usage.getByText('写操作用量暂时无法读取，请检查记忆服务和 B 站登录状态', { exact: true }).waitFor();
+  await usage.getByText('用量暂不可用，详情见报错记录', { exact: true }).waitFor();
+  await page.getByText('报错记录', { exact: true }).click();
+  await errorRecords.getByText('写操作用量暂时无法读取，请检查记忆服务和 B 站登录状态', { exact: true }).waitFor();
   await page.evaluate(() => { window.usageFailure = false; });
   await page.clock.fastForward(10000);
   await usage.getByText('本小时 13:00–14:00：已用 3 / 12 次，剩余 9 次', { exact: true }).waitFor();
@@ -163,9 +203,10 @@ try {
   await page.getByText('最近执行记录', { exact: true }).click();
   const detail = page.locator('pre').filter({ hasText: 'file:///private/example.mjs' });
   assert.equal(await detail.isVisible(), false);
-  await page.getByText('技术详情', { exact: true }).click();
+  await errorRecords.evaluate(el => { el.open = true; });
+  await errorRecords.getByText('技术详情', { exact: true }).click();
   assert.equal(await detail.isVisible(), true);
-  await page.getByText('技术详情', { exact: true }).click();
+  await errorRecords.getByText('技术详情', { exact: true }).click();
   await page.evaluate(() => { window.authStatus = { logged_in: true, login_state: 'unavailable', login_warning: '本地读取额度暂不可用，无需重新扫码。' }; });
   await page.clock.runFor(60000);
   await page.getByText('登录凭据已保存，暂时无法验证', { exact: true }).waitFor();
@@ -177,17 +218,44 @@ try {
   await page.evaluate(() => { window.authStatus = { logged_in: true, login_state: 'authenticated' }; });
   await page.clock.runFor(60000);
   await page.getByText('已登录 ✓', { exact: true }).waitFor();
+  await page.evaluate(() => {
+    window.activityState = { lastPreview: null, events: [], errorRecords: [], browseHistory: [] };
+    window.renderBiliSettings('empty');
+  });
+  await panel.waitFor();
+  await page.getByText('最近浏览记录', { exact: true }).click();
+  await page.getByText('暂无浏览记录', { exact: true }).waitFor();
+  await page.getByText('最近执行记录', { exact: true }).click();
+  await page.getByText('暂无执行记录', { exact: true }).waitFor();
+  await page.getByText('报错记录', { exact: true }).click();
+  await page.getByText('暂无报错记录', { exact: true }).waitFor();
   assert.deepEqual(errors, []);
   const output = process.argv[3];
   if (output) {
+    await page.evaluate(() => {
+      const now = Date.now() / 1000;
+      window.activityState = {
+        lastPreview: { video: { title: '最近浏览的视频' }, draft: { summary: '这里展示视频摘要，展开后查看推荐和评论草稿。', recommend: '推荐草稿内容', comment: '评论草稿内容' } },
+        events: [{ id: 'recent', kind: 'browse', status: 'success', result: { title: '最近浏览的视频' } }],
+        errorRecords: [{ id: 'resolved', source: 'last_error', message: '读取预算已恢复，对应的旧异常已解除。', status: 'resolved', lastSeenAt: now }],
+        browseHistory: [],
+      };
+      window.renderBiliSettings('preview');
+    });
+    await page.getByText('最近浏览记录', { exact: true }).waitFor();
     await page.evaluate(() => window.scrollTo(0, 0));
     mkdirSync(output, { recursive: true });
     for (const [theme, background, foreground] of [['dark', '#252525', '#eeeeee'], ['light', '#ffffff', '#202020']]) {
       await page.addStyleTag({ content: `body{background:${background};color:${foreground};font:14px sans-serif;--dsw-alias-label-primary:${foreground};--dsw-alias-label-secondary:${foreground};--dsw-alias-bg-layer-1:${background};--dsw-alias-border-l4:#777;--dsw-alias-state-error-primary:#c34d4d}` });
       await panel.screenshot({ path: join(output, `settings-${theme}.png`) });
+      await page.locator('[data-activity-records]').screenshot({ path: join(output, `records-${theme}-collapsed.png`) });
     }
+    await page.getByText('最近浏览记录', { exact: true }).click();
+    await page.getByText('报错记录', { exact: true }).click();
+    await page.locator('[data-activity-records]').screenshot({ path: join(output, 'records-expanded.png') });
   }
-  console.log(JSON.stringify({ hourlyReset: true, liveUsageRefresh: true, usageFailureVisible: true, savedBudgetDisplay: true, invalidNumbersPreventWrites: true, invalidFieldExpandedAndFocused: true, validSave: true, diagnosticDetailsCollapsed: true, browserErrors: errors }));
+  console.log(JSON.stringify({ hourlyReset: true, liveUsageRefresh: true, usageFailureVisible: true, savedBudgetDisplay: true, invalidNumbersPreventWrites: true, invalidFieldExpandedAndFocused: true, validSave: true, diagnosticDetailsCollapsed: true,
+    recordsCollapsedByDefault: true, browseKeyboardToggle: true, recoveredErrorsUpdated: true, errorsAfterExecutionRecords: true, emptyRecordStates: true, browserErrors: errors }));
 } finally {
   if (browser) await browser.close();
   await new Promise((resolve, reject) => fixture.close(error => error ? reject(error) : resolve()));

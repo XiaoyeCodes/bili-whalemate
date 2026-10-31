@@ -66,6 +66,8 @@ try {
     }
     & $venvPython -m pip install --disable-pip-version-check -r (Join-Path $PSScriptRoot 'service/requirements.txt')
     if ($LASTEXITCODE) { throw 'Python dependency installation failed' }
+    & $venvPython (Join-Path $PSScriptRoot 'scripts/fetch_gallery.py')
+    if ($LASTEXITCODE) { throw 'Gallery download or integrity check failed' }
     & $venvPython (Join-Path $PSScriptRoot 'scripts/setup.py') --home $DshHome --profile $Profile --python $venvPython --node $node --port $ServicePort --bridge-port $BridgePort
     if ($LASTEXITCODE) { throw 'Whalemate data setup failed' }
     Invoke-Harness -Arguments @('plugin','--profile',$Profile,'add','@tencent-connect/dsh-qqbot@0.5.2')

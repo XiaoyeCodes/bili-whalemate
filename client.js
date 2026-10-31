@@ -1707,8 +1707,59 @@ window.__ModuleLoader__.load({
       // ---------------------------------------------------------------------
       // B 站：账号状态 + 开关（她自己的号，嘴走 QQ 那套）
       // ---------------------------------------------------------------------
-      function BiliAutomationPanel({ value, status, writeBudget, writeUsage, onWriteBudgetChange, onChange, onRun, running }) {
+      function BiliErrorRecords({ records, current, detailsRef }) {
+        const [local, setLocal] = React.useState([]);
+        const signature = JSON.stringify(current);
+        React.useEffect(() => {
+          const now = Date.now() / 1000;
+          setLocal(previous => {
+            const next = previous.map(row => row.status === "active" && !current.some(item => item.source === row.source && item.message === row.message)
+              ? { ...row, status: "resolved", resolvedAt: now } : row);
+            for (const item of current) {
+              if (!next.some(row => row.status === "active" && row.source === item.source && row.message === item.message)) {
+                next.push({ ...item, id: "ui:" + item.source + ":" + now + ":" + next.length, status: "active", firstSeenAt: now, lastSeenAt: now, occurrences: 1 });
+              }
+            }
+            return next.slice(-30);
+          });
+          if (current.some(row => row.source === "settings") && detailsRef.current) detailsRef.current.open = true;
+        }, [signature]);
+        const rows = [...records, ...local].sort((a, b) => (b.lastSeenAt || 0) - (a.lastSeenAt || 0));
+        const pending = rows.filter(row => row.status === "active" || row.status === "review").length;
+        const sources = { last_error: "浏览与发布", dm_error: "私信", stranger_error: "评论回复", dynamic_error: "动态", blocked: "平台限制",
+          settings: "设置", usage: "写操作用量", feed: "浏览测试", login: "账号登录", owner: "主人设置", themes: "碎碎念设置",
+          browse: "浏览视频", recommend: "推荐给主人", comment: "独立评论", interact: "评论互动", dmReply: "私信回复",
+          strangerReply: "评论回复", ownerReply: "主人评论回复", strangerNotice: "评论提示", dynamic: "动态" };
+        const states = { active: "当前异常", resolved: "已解除", historical: "历史记录", review: "待核查" };
+        return h("details", { ref: detailsRef, "data-error-history": "" },
+          h("summary", { style: { ...S.label, cursor: "pointer" } }, h("span", null, "报错记录"),
+            h("span", { style: { ...S.muted, marginLeft: 8 } }, pending ? `${pending} 条待处理` : "暂无当前异常")),
+          rows.length ? rows.map(row => {
+            const long = row.message.length > 240 || /[\r\n]|file:\/\/|node:internal/.test(row.message);
+            return h("div", { key: row.id, style: { padding: "10px 0", borderBottom: "1px solid var(--dsw-alias-border-l4)", overflowWrap: "anywhere" }, "data-error-state": row.status },
+              h("div", { style: S.muted }, `${sources[row.source] || row.source} · ${states[row.status] || "历史记录"}`
+                + (row.lastSeenAt ? " · " + new Date(row.lastSeenAt * 1000).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" }) : "")
+                + (row.occurrences > 1 ? ` · 出现 ${row.occurrences} 次` : "")),
+              long ? h("details", null, h("summary", { style: S.muted }, "技术详情"),
+                h("pre", { style: { ...S.desc, whiteSpace: "pre-wrap", overflowWrap: "anywhere" } }, row.message))
+                : h("div", { style: { ...S.desc, whiteSpace: "pre-wrap" } }, row.message));
+          }) : h("div", { style: S.muted }, "暂无报错记录"));
+      }
+
+      function BiliAutomationPanel({ value, status, writeBudget, writeUsage, onWriteBudgetChange, onChange, onRun, running, uiErrors = [] }) {
+        const errorDetails = React.useRef(null);
         if (!value) return null;
+        const showErrors = () => { if (errorDetails.current) { errorDetails.current.open = true; errorDetails.current.querySelector("summary").focus(); } };
+        const errorRecords = [...((status && status.errorRecords) || [])];
+        const seen = new Set(errorRecords.map(row => row.message));
+        const addError = row => { if (row.message && !seen.has(row.message)) { errorRecords.push(row); seen.add(row.message); } };
+        for (const [key, source] of [["lastError", "last_error"], ["dmError", "dm_error"], ["strangerError", "stranger_error"], ["dynamicError", "dynamic_error"], ["blocked", "blocked"]]) {
+          if (status && status[key]) addError({ id: "current:" + key, source, message: status[key], status: "active" });
+        }
+        for (const event of ((status && status.events) || [])) {
+          if (event.error) addError({ id: "event:" + event.id, source: event.kind, message: event.error, status: event.status === "unknown" ? "review" : "historical", lastSeenAt: event.ended || event.started });
+          if (event.result && event.result.mediaWarning) addError({ id: "media:" + event.id, source: event.kind, message: event.result.mediaWarning, status: "historical", lastSeenAt: event.ended || event.started });
+        }
         const change = (path, next) => {
           const copy = JSON.parse(JSON.stringify(value));
           let cur = copy;
@@ -1726,13 +1777,6 @@ window.__ModuleLoader__.load({
             required: true, "aria-label": label, title: max === undefined ? "请输入正整数" : `请输入 ${min}～${max} 的整数`,
             style: { ...S.input, width: 86 }, value: path.reduce((o, k) => o[k], value),
             onChange: ev => change(path, ev.target.value === "" ? "" : Number(ev.target.value)) }));
-        const diagnostic = (text, unknown = false) => {
-          const long = text.length > 240 || /[\r\n]|file:\/\/|node:internal/.test(text);
-          return h("div", null,
-            h("div", { style: S.muted }, long ? (unknown ? "发送结果尚未确认，已暂停重发；请先检查 B 站会话" : "执行未完成，请展开详情查看原因") : text),
-            long ? h("details", null, h("summary", { style: S.muted }, "技术详情"),
-              h("pre", { style: { ...S.muted, whiteSpace: "pre-wrap", overflowWrap: "anywhere" } }, text)) : null);
-        };
         const names = { browse: "浏览视频", recommend: "推荐给主人", comment: "独立评论", interact: "评论互动", dmReply: "主人私信回复", strangerReply: "陌生人 @／回复互动", ownerReply: "主人评论区 @／回复",
           ...(value.lifePosts ? { dynamic: "鱼鱼碎碎念动态" } : {}) };
         const states = { success: "成功", running: "执行中", failed: "失败", unknown: "待核查" };
@@ -1753,7 +1797,7 @@ window.__ModuleLoader__.load({
                     title: "请输入 1～100000 的整数", style: { ...S.input, width: 100 }, value: writeBudget[key],
                     onChange: ev => onWriteBudgetChange(key, ev.target.value) })))),
             h("div", { style: { ...S.muted, marginTop: 8 }, role: "status", "data-write-usage": "" },
-              writeUsage === null ? "正在读取写操作用量…" : writeUsage.error ? "写操作用量暂时无法读取，请检查记忆服务和 B 站登录状态" : h(React.Fragment, null,
+              writeUsage === null ? "正在读取写操作用量…" : writeUsage.error ? "用量暂不可用，详情见报错记录" : h(React.Fragment, null,
                 h("div", null, `今日已用 ${writeUsage.daily} / ${writeUsage.dailyLimit} 次，剩余 ${writeUsage.dailyRemaining} 次（北京时间零点重置）`),
                 h("div", null, `本小时 ${budgetTime(writeUsage.hourStartedAt)}–${budgetTime(writeUsage.hourResetsAt)}：已用 ${writeUsage.hourly} / ${writeUsage.hourlyLimit} 次，剩余 ${writeUsage.hourlyRemaining} 次`),
                 h("div", null, `小时额度将在 ${budgetTime(writeUsage.hourResetsAt)} 自动重置（北京时间，每 10 秒刷新）`)))),
@@ -1790,7 +1834,6 @@ window.__ModuleLoader__.load({
                   h("label", { key, style: { display: "flex", gap: 6, alignItems: "center" } },
                     h("input", { type: "checkbox", "aria-label": "碎碎念主题：" + label, checked: value.lifePosts.themes.includes(key),
                       onChange: ev => change(["lifePosts", "themes"], ev.target.checked ? [...value.lifePosts.themes, key] : value.lifePosts.themes.filter(t => t !== key)) }), label))),
-              value.lifePosts.themes.length ? null : h("div", { style: S.notice("error") }, "至少选择一个碎碎念主题后再保存"),
               h("label", null, h("span", { style: S.label }, "碎碎念写作提示词"),
                 h("textarea", { "aria-label": "碎碎念写作提示词", style: { ...S.input, minHeight: 80, resize: "vertical" }, maxLength: 4000,
                   placeholder: "例如：喜欢冷幽默，偶尔想到宇宙；别每条都喊主人", value: value.lifePosts.prompt,
@@ -1799,7 +1842,6 @@ window.__ModuleLoader__.load({
               status && status.dynamicSchedule ? h("div", { style: S.muted },
                 "已安排时刻：" + (status.dynamicSchedule.slots.filter(Boolean).map(t => new Date(t * 1000).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })).join("、") || "剩余时段不足")
                   + (status.dynamicSchedule.note ? " · " + status.dynamicSchedule.note : "")) : null,
-              status && status.dynamicError ? h("div", { style: S.notice("error") }, "动态：" + status.dynamicError) : null,
               h("div", { style: { ...S.row, flexWrap: "wrap" } },
                 h("button", { style: S.btn(false), disabled: running || !!(status && status.busy), onClick: () => onRun(true, "dynamic") }, "预览碎碎念（不发布）"),
                 h("button", { style: S.btn(false), disabled: running || !!(status && status.busy) || !value.enabled || !value.features.dynamic, onClick: () => onRun(false, "dynamic") }, "按已保存设置发一条")),
@@ -1819,33 +1861,39 @@ window.__ModuleLoader__.load({
               number("评论通知检查间隔（秒）", ["strangerPollSeconds"], 15, 3600),
               check("评论通知全天回复", ["strangerAllDay"], "适用于主人与陌生人的评论 @／回复"),
               number("每轮最多处理陌生人消息", ["strangerBatchSize"], 1, 20),
-              check("推荐后也通知主人 QQ", ["notifyQq"]), number("值得推荐的最低评分（0–20）", ["minInterestingScore"], 0, 20))),
-          status && status.day ? h("div", { style: S.muted }, "计划日期：" + status.day + (status.nextBrowseAt ? " · 下次浏览：" + new Date(status.nextBrowseAt * 1000).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai" }) : "")) : null,
-          status && status.effectivePolling ? h("div", { style: S.muted }, "实际检查间隔：私信 " + status.effectivePolling.dmPollSeconds + " 秒 · 评论 " + status.effectivePolling.strangerPollSeconds + " 秒（按读取预算安排）") : null,
-          status && status.blocked ? h("div", { style: S.notice("error") }, "平台限制，已暂停发布：" + status.blocked) : null,
-          status && status.lastError ? h("div", { style: S.notice("error") }, status.lastError) : null,
-          status && status.dmError ? h("div", { style: S.notice("error") }, "私信：" + status.dmError) : null,
-          status && status.strangerError ? h("div", { style: S.notice("error") }, "评论回复：" + status.strangerError) : null,
-          h("div", { style: { ...S.row, flexWrap: "wrap" } },
-            h("button", { style: S.btn(false), disabled: running || !!(status && status.busy), onClick: () => onRun(true) }, "预览一轮（不发送）"),
-            h("button", { style: S.btn(false), disabled: running || !!(status && status.busy), onClick: () => onRun(false) }, status && status.busy ? "正在执行…" : "按已保存设置运行一轮")),
-          status && status.lastPreview && status.lastPreview.draft ? h("div", { style: { ...S.desc, whiteSpace: "pre-wrap" } },
+              check("推荐后也通知主人 QQ", ["notifyQq"]), number("值得推荐的最低评分（0–20）", ["minInterestingScore"], 0, 20),
+              status && status.day ? h("div", { style: S.muted }, "计划日期：" + status.day + (status.nextBrowseAt ? " · 下次浏览：" + new Date(status.nextBrowseAt * 1000).toLocaleTimeString("zh-CN", { timeZone: "Asia/Shanghai" }) : "")) : null,
+              status && status.effectivePolling ? h("div", { style: S.muted }, "实际检查间隔：私信 " + status.effectivePolling.dmPollSeconds + " 秒 · 评论 " + status.effectivePolling.strangerPollSeconds + " 秒（按读取预算安排）") : null,
+              h("div", { style: { ...S.row, flexWrap: "wrap" } },
+                h("button", { style: S.btn(false), disabled: running || !!(status && status.busy), onClick: () => onRun(true) }, "预览一轮（不发送）"),
+                h("button", { style: S.btn(false), disabled: running || !!(status && status.busy), onClick: () => onRun(false) }, status && status.busy ? "正在执行…" : "按已保存设置运行一轮")))),
+          h("div", { "data-activity-records": "", style: { display: "flex", flexDirection: "column", gap: 12 } },
+          h("details", { "data-browse-history": "" },
+            h("summary", { style: { ...S.label, cursor: "pointer" } }, "最近浏览记录"),
+            status && status.lastPreview && status.lastPreview.draft ? h("div", { style: { ...S.desc, whiteSpace: "pre-wrap" } },
             "最近预览：" + status.lastPreview.video.title + "\n摘要：" + (status.lastPreview.draft.summary || "")
               + "\n推荐草稿：" + (status.lastPreview.draft.recommend || "无") + "\n独立评论草稿：" + (status.lastPreview.draft.comment || "无")) : null,
-          status && status.events && status.events.length ? h("details", null,
+            ...((status && status.browseHistory) || []).map(row => h("div", { key: row.id, style: { padding: "8px 0", borderBottom: "1px solid var(--dsw-alias-border-l4)" } },
+              row.result.url ? h("a", { href: row.result.url, target: "_blank", rel: "noopener noreferrer" }, row.result.title || "查看视频") : h("div", { style: S.desc }, row.result.title || "浏览视频"),
+              row.started ? h("div", { style: S.muted }, new Date(row.started * 1000).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai" })) : null,
+              row.result.summary ? h("div", { style: { ...S.desc, whiteSpace: "pre-wrap" } }, "摘要：" + row.result.summary) : null)),
+            !(status && ((status.lastPreview && status.lastPreview.draft) || (status.browseHistory && status.browseHistory.length))) ? h("div", { style: S.muted }, "暂无浏览记录") : null),
+          h("details", { "data-execution-history": "" },
             h("summary", { style: { ...S.label, cursor: "pointer" } }, "最近执行记录"),
-            ...status.events.slice(0, 12).map(event => h("div", { key: event.id, style: { padding: "8px 0", borderBottom: "1px solid var(--dsw-alias-border-l4)" } },
+            ...((status && status.events) || []).slice(0, 12).map(event => h("div", { key: event.id, style: { padding: "8px 0", borderBottom: "1px solid var(--dsw-alias-border-l4)" } },
               h("span", { style: S.desc }, `${names[event.kind] || "超限固定提示"} · ${states[event.status]} `),
               event.result && event.result.url ? h("a", { href: event.result.url, target: "_blank", rel: "noopener noreferrer" }, event.result.title || "查看结果") : null,
               event.kind === "dynamic" && event.result && event.result.text ? h("div", { style: { ...S.desc, whiteSpace: "pre-wrap" } }, event.result.text) : null,
               event.result && event.result.meme_file ? h("div", { style: S.muted }, (event.result.mediaMode === "link" ? "表情原图链接：" : "配图：") + event.result.meme_file) : null,
-              event.result && event.result.mediaWarning ? h("div", { style: S.notice("error") }, event.result.mediaWarning) : null,
-              event.error ? diagnostic(event.error, event.status === "unknown") : null))) : null,
+              event.error || (event.result && event.result.mediaWarning) ? h("button", { style: S.btn(false), type: "button", onClick: showErrors }, "查看报错记录") : null)),
+            !(status && status.events && status.events.length) ? h("div", { style: S.muted }, "暂无执行记录") : null),
+          h(BiliErrorRecords, { records: errorRecords, current: uiErrors, detailsRef: errorDetails })),
         );
       }
 
       function BiliSection() {
         const sectionRef = React.useRef(null);
+        const unavailableErrors = React.useRef(null);
         const [st, setSt] = React.useState(null);
         const [busy, setBusy] = React.useState(false);
         const [test, setTest] = React.useState(null);
@@ -1869,6 +1917,17 @@ window.__ModuleLoader__.load({
         const [automationRunning, setAutomationRunning] = React.useState(false);
         const [writeBudget, setWriteBudget] = React.useState({ writeDaily: 30, writeHourly: 12 });
         const [writeUsage, setWriteUsage] = React.useState(null);
+        const errorText = text => typeof text === "string" && /失败|错误|异常|无效/.test(text);
+        const uiErrors = [
+          err && { source: "settings", message: err },
+          writeUsage && writeUsage.error && { source: "usage", message: "写操作用量暂时无法读取，请检查记忆服务和 B 站登录状态" },
+          test && !test.ok && { source: "feed", message: test.error || "浏览测试失败" },
+          errorText(loginMsg) && { source: "login", message: loginMsg },
+          errorText(qrState) && { source: "login", message: qrState },
+          errorText(ownerMsg) && { source: "owner", message: ownerMsg },
+          st && st.login_state === "unavailable" && st.login_warning && { source: "login", message: st.login_warning },
+          automation && automation.lifePosts && !automation.lifePosts.themes.length && { source: "themes", message: "至少选择一个碎碎念主题后再保存" },
+        ].filter(Boolean);
 
         const load = async () => {
           setErr(null);
@@ -2167,7 +2226,7 @@ window.__ModuleLoader__.load({
 
         if (!st) {
           return h("div", { className: "dsh-remembers-settings", style: S.wrap },
-            err ? h("div", { style: S.notice("error") }, "读取失败：" + err) : h("div", { style: S.muted }, "读取中…"));
+            err ? h(BiliErrorRecords, { records: [], current: uiErrors, detailsRef: unavailableErrors }) : h("div", { style: S.muted }, "读取中…"));
         }
 
         const loginState = st.login_state || (st.logged_in ? "authenticated" : "missing");
@@ -2184,7 +2243,6 @@ window.__ModuleLoader__.load({
             "给她一个 B 站账号，沿用当前人设读私信、刷视频和参与评论。是否发言、每天发多少，由下面的开关和数量控制。",
           ),
 
-          err ? h("div", { style: S.notice("error") }, err) : null,
 
           h("div", { style: S.card },
             h("div", { style: S.row },
@@ -2192,13 +2250,13 @@ window.__ModuleLoader__.load({
               h("span", { style: S.muted }, loginLabel),
             ),
             h("div", { style: { ...S.desc, fontSize: 12 } },
-              loginState === "unavailable" ? (st.login_warning || "登录凭据仍已保存，稍后自动验证。")
+              loginState === "unavailable" ? "登录凭据仍已保存，稍后自动验证；详情见报错记录。"
                 : st.logged_in ? "已登录，可以刷她自己的推荐了。" : "扫码登录后会保存本机凭据，重启服务不需要重新扫码。",
             ),
             loginRequired ? h("div", { style: { display: "flex", flexDirection: "column", gap: 8, marginTop: 6 } },
               h("div", { style: S.row },
                 h("button", { style: S.btn(true), onClick: () => void startQr(), disabled: busy }, "扫码登录"),
-                qrState ? h("span", { style: S.muted }, qrState) : null,
+                qrState ? h("span", { style: S.muted }, errorText(qrState) ? "登录流程暂不可用，详情见报错记录" : qrState) : null,
               ),
               qr ? h("img", { src: qr.svg, style: { width: 180, height: 180, alignSelf: "center", background: "#fff", borderRadius: 8 } }) : null,
               h("details", { style: { marginTop: 4 } },
@@ -2211,7 +2269,7 @@ window.__ModuleLoader__.load({
                   ),
                   h("div", { style: S.row },
                     h("button", { style: S.btn(false), onClick: () => void doLogin(), disabled: busy }, busy ? "验证中…" : "保存并验证"),
-                    loginMsg ? h("span", { style: S.muted }, loginMsg) : null,
+                    loginMsg && !errorText(loginMsg) ? h("span", { style: S.muted }, loginMsg) : null,
                   ),
                 ),
               ),
@@ -2233,7 +2291,7 @@ window.__ModuleLoader__.load({
             ),
           ),
 
-          h(BiliAutomationPanel, { value: automation, status: automationStatus, running: automationRunning, writeBudget, writeUsage,
+          h(BiliAutomationPanel, { value: automation, status: automationStatus, running: automationRunning, writeBudget, writeUsage, uiErrors,
             onWriteBudgetChange: (key, value) => { setWriteBudget(previous => ({ ...previous, [key]: value })); setSavedAt(null); },
             onChange: value => { setAutomation(value); setSavedAt(null); }, onRun: runAutomation }),
 
@@ -2277,7 +2335,7 @@ window.__ModuleLoader__.load({
               h("input", { style: S.input, placeholder: "你的 B 站 UID（数字）", value: ownerMid, onChange: (ev) => { setOwnerMid(ev.target.value); setSavedAt(null); } }),
               h("input", { style: S.input, placeholder: "昵称（可选）", value: ownerName, onChange: (ev) => { setOwnerName(ev.target.value); setSavedAt(null); } }),
             ),
-            ownerMsg ? h("div", { style: { fontSize: 12, color: ownerMsg.includes("失败") ? "color-mix(in srgb, var(--dsw-alias-state-error-primary) 60%, var(--dsw-alias-label-primary))" : "color-mix(in srgb, var(--dsw-alias-state-success-primary) 60%, var(--dsw-alias-label-primary))", marginTop: 6 } }, ownerMsg) : null,
+            ownerMsg && !errorText(ownerMsg) ? h("div", { style: { fontSize: 12, color: "color-mix(in srgb, var(--dsw-alias-state-success-primary) 60%, var(--dsw-alias-label-primary))", marginTop: 6 } }, ownerMsg) : null,
           ),
 
           biliCfg ? (() => {
@@ -2314,10 +2372,8 @@ window.__ModuleLoader__.load({
             h("div", { style: S.row },
               h("button", { style: S.btn(false), onClick: () => void runTest(), disabled: busy }, busy ? "刷…" : "刷一下 B 站"),
             ),
-            test ? h("div", { style: { ...S.desc, marginTop: 8, whiteSpace: "pre-wrap" } },
-              test.ok
-                ? "来源：" + (test.source || "?") + "\n" + (test.items || []).map((i) => (i.title || i) + (i.url ? "  " + i.url : "")).join("\n")
-                : "失败：" + (test.error || "unknown"))
+            test && test.ok ? h("div", { style: { ...S.desc, marginTop: 8, whiteSpace: "pre-wrap" } },
+              "来源：" + (test.source || "?") + "\n" + (test.items || []).map((i) => (i.title || i) + (i.url ? "  " + i.url : "")).join("\n"))
               : null,
           ),
         );

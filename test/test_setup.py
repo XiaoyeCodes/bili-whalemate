@@ -13,6 +13,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import setup
+import export_settings
 
 
 class SetupTest(unittest.TestCase):
@@ -24,7 +25,7 @@ class SetupTest(unittest.TestCase):
         self.gallery = self.bundle / "gallery"
         self.gallery.mkdir(parents=True)
         (self.gallery / "hello.png").write_bytes(b"fixture-image-bytes")
-        for name in ("persona.json", "proactive.json", "bili.json", "bili_tools.json", "bili-whale.config.json", "meme-packs.json", "environment.json", "state-settings.json"):
+        for name in ("persona.json", "persona-cards.json", "profile-settings.json", "service-settings.json", "proactive.json", "bili.json", "bili_tools.json", "bili-whale.config.json", "meme-packs.json", "environment.json", "state-settings.json"):
             setup.save(self.bundle / "seed" / name, setup.load(ROOT / "seed" / name))
         self.row = {"file": "hello.png", "emotion": "happy", "caption": "你好", "keywords": "自动回复禁用", "pack": "dafeiyu"}
         setup.save(self.bundle / "seed/gallery.json", [self.row])
@@ -71,6 +72,52 @@ class SetupTest(unittest.TestCase):
         with closing(sqlite3.connect(data / "memories.db")) as db:
             self.assertEqual(db.execute("select constitution,identity from persona").fetchone(), ("", "local persona"))
             self.assertEqual(db.execute("select caption,used_count from meme").fetchone(), ("local caption", 7))
+
+    def test_fresh_settings_match_approved_prompts_and_channel_selections(self):
+        self.install()
+        actual = export_settings.snapshot(self.home, "web", env={})
+        for name in ("persona.json", "persona-cards.json", "profile-settings.json", "service-settings.json", "proactive.json", "bili-whale.config.json", "state-settings.json", "bili.json", "bili_tools.json"):
+            self.assertEqual(actual[name], setup.load(self.bundle / "seed" / name), name)
+
+    def test_reinstall_preserves_edited_cards_and_channel_selection(self):
+        self.install()
+        with closing(sqlite3.connect(self.home / "remembers-data/memories.db")) as db:
+            db.execute("update persona_card set prompt='my changed prompt'")
+            db.execute("update persona_channel set card_id='legacy'")
+            db.commit()
+        profile = self.home / "profiles/web/cordis.patch.yml"
+        import yaml
+        rows = yaml.safe_load(profile.read_text(encoding="utf-8"))
+        next(r for r in rows if r['id'] == 'im-qqbot')['config']['directPrompt'] = 'my local QQ prompt'
+        profile.write_text(yaml.safe_dump(rows, allow_unicode=True), encoding="utf-8")
+        self.install()
+        result = export_settings.snapshot(self.home, "web", env={})
+        self.assertTrue(all(c['prompt'] == 'my changed prompt' for c in result['persona-cards.json']['cards']))
+        self.assertEqual(result['persona-cards.json']['active'], {'qq': 'legacy', 'bili': 'legacy'})
+        self.assertEqual(result['profile-settings.json']['im-qqbot']['directPrompt'], 'my local QQ prompt')
+
+    def test_export_omits_accounts_secrets_history_and_unknown_fields(self):
+        self.install()
+        data = self.home / "remembers-data"
+        cfg = setup.load(self.home / "bili-whale.config.json")
+        cfg.update(owner={"mid": "private-mid", "name": "private-owner"}, cookie="private-cookie")
+        setup.save(self.home / "bili-whale.config.json", cfg)
+        setup.save(data / "config.json", {"llm_key": "private-api-key", "embed_key": "private-embed-key", "unknown": "private-extra"})
+        proactive = setup.load(data / "proactive.json")
+        proactive['ownerId'] = 'private-peer'; setup.save(data / "proactive.json", proactive)
+        profile = self.home / "profiles/web/cordis.patch.yml"
+        profile.write_text("- id: im-qqbot\n  config:\n    appId: private-app\n    appSecret: private-secret\n    directPrompt: approved prompt\n    other: !!js private-expression\n    access:\n      c2cMode: open\n      allowedUsers: [private-user]\n", encoding="utf-8")
+        with closing(sqlite3.connect(data / "memories.db")) as db:
+            db.execute("update persona set user_profile='private-profile', self_model='private-memory'")
+            db.commit()
+        result = export_settings.snapshot(self.home, "web", env={"CMEM_LLM_KEY": "private-env-key"})
+        self.assertNotIn("private-", json.dumps(result))
+        self.assertEqual(result['bili-whale.config.json']['owner'], {'mid': '', 'name': ''})
+        self.assertEqual(result['profile-settings.json']['im-qqbot']['directPrompt'], 'approved prompt')
+
+    def test_unknown_nested_objects_cannot_hide_in_approved_scalar_fields(self):
+        with self.assertRaisesRegex(ValueError, "scalar"):
+            export_settings.select({"enabled": {"llm_key": "hidden"}}, {"enabled": True})
             self.assertEqual(db.execute("select count(*) from meme").fetchone()[0], 1)
 
     def test_each_installation_receives_a_distinct_private_bridge_token(self):
